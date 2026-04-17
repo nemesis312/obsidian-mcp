@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"obsidian-mcp/internal/tools"
 	"obsidian-mcp/internal/vault"
 
 	"github.com/mark3labs/mcp-go/server"
@@ -34,12 +35,11 @@ func main() {
 		server.WithToolCapabilities(false),
 	)
 
-	// 4. TODO: Register tools (Phase 2-5)
-	// tools.RegisterReadTools(s, v)
-	// tools.RegisterWriteTools(s, v)
-	// tools.RegisterGraphTools(s, v)
-	// tools.RegisterTagTools(s, v)
-	// tools.RegisterCanvasTools(s, v)
+	// 4. Register all 20 tools
+	tools.RegisterReadTools(s, v)
+	tools.RegisterWriteTools(s, v)
+	tools.RegisterGraphTools(s, v)
+	tools.RegisterTagTools(s, v)
 
 	// 5. Serve via stdio
 	if err := server.ServeStdio(s); err != nil {
