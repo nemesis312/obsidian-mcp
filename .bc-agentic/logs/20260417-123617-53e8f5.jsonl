@@ -1,0 +1,6 @@
+{"ts":"2026-04-17T12:36:17Z","type":"run.created","message":"Run created"}
+{"ts":"2026-04-17T12:36:17Z","type":"artifacts.destination","message":"Artifacts destination: repo -\u003e docs/agentic/20260417-123617-53e8f5"}
+{"ts":"2026-04-17T12:36:24Z","type":"context.generated","message":"Step context packet generated for explore"}
+{"ts":"2026-04-17T12:36:24Z","type":"subagent.started","message":"Started subagent session for explore: subagent-20260417-123624"}
+{"ts":"2026-04-17T12:36:24Z","type":"subagent.started","message":"Auto-started from next for step explore: subagent-20260417-123624"}
+{"ts":"2026-04-17T12:39:57Z","type":"subagent.handoff","message":"Completed subagent session for explore: subagent-20260417-123624"}
