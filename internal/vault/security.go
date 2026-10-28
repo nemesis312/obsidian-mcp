@@ -32,6 +32,12 @@ func NewSecurityLayer(root string) *SecurityLayer {
 // and does not touch a protected segment (.git, .obsidian).
 // Returns the resolved absolute path if valid, error otherwise.
 func (s *SecurityLayer) ValidatePath(targetPath string) (string, error) {
+	// 0. A volume name without an absolute path ("Z:x.md", Windows drive-relative)
+	// is neither inside the vault nor safely joinable: reject before any join or FS call.
+	if filepath.VolumeName(targetPath) != "" && !filepath.IsAbs(targetPath) {
+		return "", errOutside
+	}
+
 	// 1. Convert to absolute, cleaned path
 	var absPath string
 	if filepath.IsAbs(targetPath) {

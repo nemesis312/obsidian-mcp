@@ -6,6 +6,16 @@ import (
 	"testing"
 )
 
+// abs returns the platform-absolute form of a unix-style test path, as the code under test computes it.
+func abs(t *testing.T, p string) string {
+	t.Helper()
+	a, err := filepath.Abs(filepath.FromSlash(p))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a
+}
+
 func writeConfig(t *testing.T, body string) string {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "obsidian.json")
@@ -25,7 +35,7 @@ func TestReadVaultFromConfig_PrefersOpen(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got != filepath.FromSlash("/v/b") {
+		if got != abs(t, "/v/b") {
 			t.Fatalf("got %s, want /v/b", got)
 		}
 	}
@@ -42,7 +52,7 @@ func TestReadVaultFromConfig_HighestTimestamp(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got != filepath.FromSlash("/v/b") {
+		if got != abs(t, "/v/b") {
 			t.Fatalf("got %s, want /v/b", got)
 		}
 	}
@@ -64,15 +74,15 @@ func TestDetect_Priority(t *testing.T) {
 	cfg := writeConfig(t, `{"vaults":{"a":{"path":"/v/cfg","ts":1}}}`)
 
 	got, err := detect("/v/flag", "/v/env", cfg)
-	if err != nil || got != filepath.FromSlash("/v/flag") {
+	if err != nil || got != abs(t, "/v/flag") {
 		t.Fatalf("flag: got %q, %v", got, err)
 	}
 	got, err = detect("", "/v/env", cfg)
-	if err != nil || got != filepath.FromSlash("/v/env") {
+	if err != nil || got != abs(t, "/v/env") {
 		t.Fatalf("env: got %q, %v", got, err)
 	}
 	got, err = detect("", "", cfg)
-	if err != nil || got != filepath.FromSlash("/v/cfg") {
+	if err != nil || got != abs(t, "/v/cfg") {
 		t.Fatalf("config: got %q, %v", got, err)
 	}
 	if _, err = detect("", "", ""); err == nil {
