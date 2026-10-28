@@ -19,9 +19,14 @@ func New(root string) (*Vault, error) {
 		return nil, fmt.Errorf("invalid vault path: %w", err)
 	}
 
+	resolved, err := filepath.EvalSymlinks(absRoot)
+	if err != nil {
+		return nil, fmt.Errorf("invalid vault path: %w", err)
+	}
+
 	return &Vault{
-		root:     absRoot,
-		security: NewSecurityLayer(absRoot),
+		root:     resolved,
+		security: NewSecurityLayer(resolved),
 		cache:    NewCache(60 * time.Second), // 60s TTL
 	}, nil
 }

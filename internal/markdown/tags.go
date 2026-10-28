@@ -56,24 +56,6 @@ func ParseAllTags(content string, fmData map[string]interface{}) []string {
 	return uniqueTags(all)
 }
 
-// RenameTag replaces all instances of a tag with a new name
-func RenameTag(content string, oldTag, newTag string) string {
-	// Replace inline tags
-	newPattern := "#" + newTag
-
-	// Use word boundary to avoid partial matches
-	lines := strings.Split(content, "\n")
-
-	for i, line := range lines {
-		// Match whole tag only
-		re := regexp.MustCompile(`(^|\s)#` + regexp.QuoteMeta(oldTag) + `(\s|$)`)
-		lines[i] = re.ReplaceAllString(line, "${1}"+newPattern+"${2}")
-	}
-
-	result := strings.Join(lines, "\n")
-	return result
-}
-
 // extractTagValues handles various YAML tag formats
 func extractTagValues(val interface{}) []string {
 	var tags []string

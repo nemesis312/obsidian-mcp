@@ -1,4 +1,4 @@
-.PHONY: build test clean install release snapshot help
+.PHONY: build test coverage lint deps clean install release snapshot help
 
 # Binary name
 BINARY=obsidian-mcp

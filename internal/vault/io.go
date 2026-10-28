@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"obsidian-mcp/internal/markdown"
+	"github.com/nemesis312/obsidian-mcp/internal/markdown"
 )
 
 // ListFiles returns all markdown files in the vault
@@ -88,35 +88,115 @@ func (v *Vault) ReadNote(path string) (string, error) {
 	return string(content), nil
 }
 
-// WriteNote writes content to a note (creates or overwrites)
+// NormalizeNotePath enforces that write operations only target markdown notes.
+// A path without extension gets ".md" appended; any other extension is an error.
+func NormalizeNotePath(path string) (string, error) {
+	if path == "" || strings.HasSuffix(path, "/") {
+		return "", fmt.Errorf("invalid note path: %q", path)
+	}
+	switch ext := filepath.Ext(path); {
+	case ext == "":
+		return path + ".md", nil
+	case strings.EqualFold(ext, ".md"):
+		return path, nil
+	default:
+		return "", fmt.Errorf("only .md notes are supported (got %q extension)", ext)
+	}
+}
+
+// resolveNote normalizes the extension and validates the path against the vault.
+func (v *Vault) resolveNote(path string) (string, error) {
+	norm, err := NormalizeNotePath(path)
+	if err != nil {
+		return "", err
+	}
+	safe, err := v.security.ValidatePath(norm)
+	if err != nil {
+		return "", err
+	}
+	return safe, requireMarkdownTarget(safe)
+}
+
+// requireMarkdownTarget ensures the symlink-resolved target is a .md file, so
+// a "note.md" symlink cannot be used to overwrite or delete e.g. a script.
+func requireMarkdownTarget(resolved string) error {
+	if !strings.EqualFold(filepath.Ext(resolved), ".md") {
+		return fmt.Errorf("path_violation: note resolves to a non-markdown file")
+	}
+	return nil
+}
+
+func (v *Vault) invalidate(safePath string) {
+	if v.cache != nil {
+		v.cache.Invalidate(safePath)
+	}
+}
+
+// WriteNote writes content to a note (creates or overwrites) atomically.
 func (v *Vault) WriteNote(path, content string) error {
-	safePath, err := v.security.ValidatePath(path)
+	safePath, err := v.resolveNote(path)
 	if err != nil {
 		return err
 	}
 
-	// Ensure parent directory exists
-	dir := filepath.Dir(safePath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(safePath), 0o755); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
 
-	// Write note
-	if err := os.WriteFile(safePath, []byte(content), 0644); err != nil {
+	if err := writeFileAtomic(safePath, []byte(content)); err != nil {
 		return fmt.Errorf("failed to write note: %w", err)
 	}
 
-	// Invalidate cache
-	if v.cache != nil {
-		v.cache.Invalidate(path)
+	v.invalidate(safePath)
+	return nil
+}
+
+// CreateNote creates a new note, failing if it already exists. Frontmatter (if
+// any) is merged into content before the single write. It returns the
+// normalized vault path of the note.
+//
+// Exclusivity: the full content is first written to a temp file in the same
+// directory, then published with os.Link, which fails with EEXIST atomically.
+// Readers therefore never observe a partially written note and concurrent
+// creators cannot both succeed. If the filesystem has no hard links, it falls
+// back to open(O_CREATE|O_EXCL) on the final path (still race-free for
+// exclusivity, but not for partial reads).
+func (v *Vault) CreateNote(path, content string, frontmatter map[string]interface{}) (string, error) {
+	norm, err := NormalizeNotePath(path)
+	if err != nil {
+		return "", err
+	}
+	safePath, err := v.resolveNote(norm)
+	if err != nil {
+		return "", err
 	}
 
-	return nil
+	if len(frontmatter) > 0 {
+		content, err = markdown.UpdateFrontmatter(content, frontmatter)
+		if err != nil {
+			return "", fmt.Errorf("failed to add frontmatter: %w", err)
+		}
+	}
+
+	if err := os.MkdirAll(filepath.Dir(safePath), 0o755); err != nil {
+		return "", fmt.Errorf("failed to create directory: %w", err)
+	}
+
+	if err := createExclusive(safePath, []byte(content)); err != nil {
+		return "", err
+	}
+
+	v.invalidate(safePath)
+	return norm, nil
 }
 
 // AppendToNote appends content to an existing note
 func (v *Vault) AppendToNote(path, content string) error {
-	existing, err := v.ReadNote(path)
+	norm, err := NormalizeNotePath(path)
+	if err != nil {
+		return err
+	}
+	existing, err := v.ReadNote(norm)
 	if err != nil {
 		return err
 	}
@@ -127,25 +207,25 @@ func (v *Vault) AppendToNote(path, content string) error {
 	}
 	updated += content
 
-	return v.WriteNote(path, updated)
+	return v.WriteNote(norm, updated)
 }
 
 // DeleteNote removes a note from the vault
 func (v *Vault) DeleteNote(path string) error {
-	safePath, err := v.security.ValidatePath(path)
+	safePath, err := v.resolveNote(path)
 	if err != nil {
 		return err
+	}
+
+	if info, err := os.Stat(safePath); err == nil && info.IsDir() {
+		return fmt.Errorf("failed to delete note: %s is a directory", path)
 	}
 
 	if err := os.Remove(safePath); err != nil {
 		return fmt.Errorf("failed to delete note: %w", err)
 	}
 
-	// Invalidate cache
-	if v.cache != nil {
-		v.cache.Invalidate(path)
-	}
-
+	v.invalidate(safePath)
 	return nil
 }
 
@@ -209,6 +289,10 @@ func (v *Vault) GetFrontmatter(path string) (map[string]interface{}, error) {
 
 // UpdateFrontmatter updates frontmatter fields in a note
 func (v *Vault) UpdateFrontmatter(path string, updates map[string]interface{}) error {
+	path, err := NormalizeNotePath(path)
+	if err != nil {
+		return err
+	}
 	content, err := v.ReadNote(path)
 	if err != nil {
 		return err

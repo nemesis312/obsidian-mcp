@@ -1,7 +1,7 @@
 package vault
 
 import (
-	"obsidian-mcp/internal/markdown"
+	"github.com/nemesis312/obsidian-mcp/internal/markdown"
 	"path/filepath"
 	"strings"
 )
@@ -13,9 +13,9 @@ type LinkGraph struct {
 }
 
 type GraphNode struct {
-	Path         string
-	Outgoing     []string // paths this note links to
-	Incoming     []string // paths that link to this note
+	Path     string
+	Outgoing []string // paths this note links to
+	Incoming []string // paths that link to this note
 }
 
 type GraphEdge struct {

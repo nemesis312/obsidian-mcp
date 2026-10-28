@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"obsidian-mcp/internal/vault"
+	"github.com/nemesis312/obsidian-mcp/internal/vault"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"

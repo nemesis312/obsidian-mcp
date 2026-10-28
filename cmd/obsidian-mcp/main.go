@@ -1,18 +1,36 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
 
-	"obsidian-mcp/internal/tools"
-	"obsidian-mcp/internal/vault"
+	"github.com/nemesis312/obsidian-mcp/internal/tools"
+	"github.com/nemesis312/obsidian-mcp/internal/vault"
 
 	"github.com/mark3labs/mcp-go/server"
 )
 
+// Set at build time via -ldflags "-X main.version=... -X main.commit=... -X main.date=...".
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
 func main() {
+	vaultFlag := flag.String("vault", "", "Path to Obsidian vault")
+	showVersion := flag.Bool("version", false, "Print version information and exit")
+	flag.Parse()
+
+	// stdout is reserved for JSON-RPC; this is the only path allowed to print there.
+	if *showVersion {
+		fmt.Printf("obsidian-mcp %s (commit %s, built %s)\n", version, commit, date)
+		return
+	}
+
 	// 1. Detect vault
-	vaultPath, err := vault.DetectVault()
+	vaultPath, err := vault.DetectVault(*vaultFlag)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "obsidian-mcp: %v\n", err)
 		fmt.Fprintf(os.Stderr, "Use --vault=/path/to/vault or set OBSIDIAN_VAULT_PATH\n")
@@ -31,7 +49,7 @@ func main() {
 	// 3. Create MCP server
 	s := server.NewMCPServer(
 		"obsidian-mcp",
-		"1.0.0",
+		version,
 		server.WithToolCapabilities(false),
 	)
 
