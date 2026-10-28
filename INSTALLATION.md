@@ -11,21 +11,23 @@ This guide covers how to install and connect `obsidian-mcp` with three MCP clien
 
 ### Option A: Download a prebuilt release (recommended)
 
-Go to the [releases page](https://github.com/mark3labs/obsidian-mcp/releases) and download the archive for your platform:
+Go to the [releases page](https://github.com/nemesis312/obsidian-mcp/releases) and download the archive for your platform. Archives are named `obsidian-mcp_<version>_<Os>_<arch>` (`.tar.gz`, or `.zip` on Windows). Replace `<version>` with the release version without the `v` prefix:
 
 | Platform | File |
 |---|---|
-| macOS (Apple Silicon) | `obsidian-mcp_darwin_arm64.tar.gz` |
-| macOS (Intel) | `obsidian-mcp_darwin_amd64.tar.gz` |
-| Linux x86-64 | `obsidian-mcp_linux_amd64.tar.gz` |
-| Linux ARM64 | `obsidian-mcp_linux_arm64.tar.gz` |
-| Windows x86-64 | `obsidian-mcp_windows_amd64.zip` |
+| macOS (Apple Silicon and Intel, universal binary) | `obsidian-mcp_<version>_Darwin_all.tar.gz` |
+| Linux x86-64 | `obsidian-mcp_<version>_Linux_x86_64.tar.gz` |
+| Linux ARM64 | `obsidian-mcp_<version>_Linux_arm64.tar.gz` |
+| Windows x86-64 | `obsidian-mcp_<version>_Windows_x86_64.zip` |
+| Windows ARM64 | `obsidian-mcp_<version>_Windows_arm64.zip` |
+
+> The macOS arch suffix `all` is inferred from GoReleaser's universal binary behavior; check the asset names on the releases page if yours differs.
 
 Extract and move the binary to somewhere on your `$PATH`:
 
 ```bash
-# macOS / Linux
-tar -xzf obsidian-mcp_darwin_arm64.tar.gz
+# macOS / Linux (adjust the file name to your download)
+tar -xzf obsidian-mcp_<version>_Darwin_all.tar.gz
 sudo mv obsidian-mcp /usr/local/bin/
 chmod +x /usr/local/bin/obsidian-mcp
 
@@ -33,10 +35,10 @@ chmod +x /usr/local/bin/obsidian-mcp
 obsidian-mcp --version
 ```
 
-### Option B: Build from source (requires Go 1.22+)
+### Option B: Build from source (requires Go 1.26.1+)
 
 ```bash
-go install github.com/mark3labs/obsidian-mcp/cmd/obsidian-mcp@latest
+go install github.com/nemesis312/obsidian-mcp/cmd/obsidian-mcp@latest
 ```
 
 The binary lands in `$(go env GOPATH)/bin/obsidian-mcp`. Make sure that directory is on your `$PATH`.
@@ -44,7 +46,7 @@ The binary lands in `$(go env GOPATH)/bin/obsidian-mcp`. Make sure that director
 ### Option C: Build locally
 
 ```bash
-git clone https://github.com/mark3labs/obsidian-mcp.git
+git clone https://github.com/nemesis312/obsidian-mcp.git
 cd obsidian-mcp
 make build
 # binary is at ./obsidian-mcp
@@ -253,29 +255,28 @@ This reads the vault path from the `OBSIDIAN_VAULT_PATH` environment variable so
 
 ---
 
-## Optional Flags
+## Flags
 
 | Flag | Default | Description |
 |---|---|---|
 | `--vault` | auto-detect | Absolute path to the Obsidian vault |
-| `--transport` | `stdio` | `stdio` or `http` |
-| `--port` | `8080` | Port when `--transport=http` |
-| `--cache-ttl` | `60` | Cache TTL in seconds |
-| `--no-cache` | off | Disable in-memory cache |
-| `--log-level` | `info` | `debug`, `info`, `warn`, `error` |
+| `--version` | off | Print the version and exit |
+
+The server speaks MCP over stdio only.
 
 ---
 
 ## Vault Auto-Detection
 
-If you omit `--vault`, the server looks in this order:
+The server looks in this order:
 
-1. `OBSIDIAN_VAULT_PATH` environment variable
-2. Obsidian's own config file (picks the most recently opened vault):
+1. `--vault` flag
+2. `OBSIDIAN_VAULT_PATH` environment variable
+3. Obsidian's own config file (with several vaults, prefers the open vault, then the most recently used):
    - macOS: `~/Library/Application Support/obsidian/obsidian.json`
    - Linux: `~/.config/obsidian/obsidian.json`
    - Windows: `%APPDATA%/obsidian/obsidian.json`
-3. Exits with an error if no vault is found
+4. Exits with an error if no vault is found
 
 ---
 
@@ -296,13 +297,14 @@ Pass `--vault` explicitly with the absolute path to the folder that contains `.o
 Check that the config JSON is valid (no trailing commas). Use `python3 -m json.tool claude_desktop_config.json` to validate.
 
 **Permission denied on vault files**
-The server only reads and writes files inside the vault root. If it rejects a path, verify there are no symlinks pointing outside the vault.
+The server only reads and writes files inside the vault root. Paths that escape the vault, including via symlinks, are rejected. Write tools only operate on `.md` files.
 
 ---
 
 ## Security Notes
 
-- All file paths are validated against the vault root — `../` traversal attempts are rejected
-- Writes to `.obsidian/` and `.git/` are blocked
+- All file paths are validated against the vault root; `../` traversal and symlink escapes are rejected
+- `.obsidian/` and `.git/` are blocked
+- Write tools only operate on `.md` files
 - The server does not execute any code from note contents
-- No network access is made unless you run `--transport=http`
+- The server communicates over stdio only (no network listener)

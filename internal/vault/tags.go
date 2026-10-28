@@ -1,7 +1,9 @@
 package vault
 
 import (
-	"obsidian-mcp/internal/markdown"
+	"fmt"
+
+	"github.com/nemesis312/obsidian-mcp/internal/markdown"
 )
 
 // TagIndex maps tag names to file paths
@@ -88,73 +90,67 @@ func (v *Vault) GetNotesByTag(tag string) ([]string, error) {
 	return matches, nil
 }
 
-// RenameTag renames a tag across all notes in the vault
-func (v *Vault) RenameTag(oldTag, newTag string) (int, error) {
-	files, err := v.ListFiles()
+// RenameFailure describes a note that could not be processed by RenameTag.
+type RenameFailure struct {
+	Path  string `json:"path"`
+	Error string `json:"error"`
+}
+
+// RenameResult reports which notes were rewritten and which failed.
+type RenameResult struct {
+	Renamed []string        `json:"renamed"`
+	Failed  []RenameFailure `json:"failed"`
+}
+
+// RenameTag renames a tag (and its nested children, a -> new, a/b -> new/b)
+// across all notes. Both names are validated; per-note errors are collected in
+// the result instead of aborting or being silently dropped.
+func (v *Vault) RenameTag(oldTag, newTag string) (RenameResult, error) {
+	res := RenameResult{Renamed: []string{}, Failed: []RenameFailure{}}
+
+	oldTag, err := markdown.NormalizeTagName(oldTag)
 	if err != nil {
-		return 0, err
+		return res, fmt.Errorf("invalid old_tag: %w", err)
+	}
+	newTag, err = markdown.NormalizeTagName(newTag)
+	if err != nil {
+		return res, fmt.Errorf("invalid new_tag: %w", err)
+	}
+	if oldTag == newTag {
+		return res, fmt.Errorf("old_tag and new_tag are identical")
 	}
 
-	count := 0
+	files, err := v.ListFiles()
+	if err != nil {
+		return res, err
+	}
+
+	renamer := markdown.NewTagRenamer(oldTag, newTag) // compiled patterns are shared; built once per rename
 
 	for _, file := range files {
 		content, err := v.ReadNote(file)
 		if err != nil {
+			res.Failed = append(res.Failed, RenameFailure{Path: file, Error: err.Error()})
 			continue
 		}
 
-		// Parse frontmatter
-		fm, body, err := markdown.ParseFrontmatter(content)
+		updated, changed, err := renamer.RenameNote(content)
 		if err != nil {
+			res.Failed = append(res.Failed, RenameFailure{Path: file, Error: err.Error()})
+			continue
+		}
+		if !changed {
 			continue
 		}
 
-		modified := false
-
-		// Rename inline tags in body
-		newBody := markdown.RenameTag(body, oldTag, newTag)
-		if newBody != body {
-			body = newBody
-			modified = true
+		if err := v.WriteNote(file, updated); err != nil {
+			res.Failed = append(res.Failed, RenameFailure{Path: file, Error: err.Error()})
+			continue
 		}
-
-		// Rename frontmatter tags
-		if fm != nil && fm.Data != nil {
-			fmTags := markdown.ParseFrontmatterTags(fm.Data)
-			for i, tag := range fmTags {
-				if tag == oldTag {
-					fmTags[i] = newTag
-					modified = true
-				}
-			}
-
-			if modified {
-				// Update frontmatter tags field
-				fm.Data["tags"] = fmTags
-			}
-		}
-
-		// Write back if modified
-		if modified {
-			var newContent string
-			if fm != nil {
-				newContent, err = markdown.UpdateFrontmatter(body, fm.Data)
-				if err != nil {
-					continue
-				}
-			} else {
-				newContent = body
-			}
-
-			if err := v.WriteNote(file, newContent); err != nil {
-				continue
-			}
-
-			count++
-		}
+		res.Renamed = append(res.Renamed, file)
 	}
 
-	return count, nil
+	return res, nil
 }
 
 // BuildTagIndex creates an index of all tags and their notes

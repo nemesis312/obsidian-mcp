@@ -23,7 +23,7 @@ Available for:
 
 ### From Source
 
-Requires Go 1.22+:
+Requires Go 1.26.1+ (see `go.mod`):
 
 ```bash
 go install github.com/nemesis312/obsidian-mcp/cmd/obsidian-mcp@latest
@@ -50,6 +50,14 @@ obsidian-mcp
 
 ```bash
 obsidian-mcp --vault="/path/to/your/vault"
+```
+
+If neither is set, the server falls back to Obsidian's own `obsidian.json`. With multiple vaults it prefers the open vault, then the most recently used.
+
+### Version
+
+```bash
+obsidian-mcp --version
 ```
 
 ### MCP Configuration
@@ -172,19 +180,20 @@ obsidian-mcp/
 
 ## Security
 
-- **Path Traversal Protection**: All paths validated against vault root
-- **Hidden File Protection**: Skips `.obsidian`, `.git`, and dotfiles
-- **No Arbitrary Execution**: Pure file system operations only
+- **Vault confinement**: paths that escape the vault, including via symlinks, are rejected.
+- **Protected directories**: `.git/` and `.obsidian/` are blocked.
+- **Markdown-only writes**: `create_note`, `append_to_note`, `patch_note`, `update_frontmatter` and `delete_note` only operate on `.md` files.
+- **Safe tag renames**: `rename_tag` also renames nested tags (`#a/b`), skips code blocks, and reports per-file failures.
+- **No code execution**: pure file system operations.
+
+See [SECURITY.md](SECURITY.md) for the threat model and how to report vulnerabilities.
 
 ## Performance
 
 - **In-Memory Cache**: 60-second TTL for frequently accessed files
-- **Efficient Scanning**: Uses `filepath.Walk` with early termination
-- **Zero Allocations**: Optimized for large vaults (1000+ notes)
 
 ## Compatibility
 
-- **Obsidian Version**: Compatible with Obsidian 1.4+
 - **Frontmatter**: YAML between `---` delimiters
 - **Wikilinks**: Supports `[[Page]]`, `[[Page|Alias]]`, `[[Page#Section]]`
 - **Tags**: Inline (`#tag`) and frontmatter (`tags: [tag1, tag2]`)
@@ -194,8 +203,10 @@ obsidian-mcp/
 
 ### Requirements
 
-- Go 1.22+
+- Go 1.26.1+
 - Make (optional)
+
+CI runs `go vet`, `gofmt` and race tests on pull requests (`.github/workflows/ci.yml`).
 
 ### Build
 
@@ -228,7 +239,7 @@ GitHub Actions will run goreleaser and publish binaries for all platforms.
 
 ## Contributing
 
-We welcome contributions from the community! Please follow this workflow:
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) and the [Code of Conduct](CODE_OF_CONDUCT.md). In short:
 
 1. Fork the repository
 2. Create a feature branch off `develop`:
@@ -256,7 +267,6 @@ MIT License — see [LICENSE](LICENSE) file for details.
 ## Support
 
 - Issues: [GitHub Issues](https://github.com/nemesis312/obsidian-mcp/issues)
-- Discussions: [GitHub Discussions](https://github.com/nemesis312/obsidian-mcp/discussions)
 
 ---
 

@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"obsidian-mcp/internal/vault"
+	"github.com/nemesis312/obsidian-mcp/internal/vault"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -110,7 +110,7 @@ func registerRenameTag(s *server.MCPServer, v *vault.Vault) {
 			return mcp.NewToolResultError(fmt.Sprintf("invalid new_tag: %v", err)), nil
 		}
 
-		count, err := v.RenameTag(oldTag, newTag)
+		res, err := v.RenameTag(oldTag, newTag)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("failed to rename tag: %v", err)), nil
 		}
@@ -118,7 +118,9 @@ func registerRenameTag(s *server.MCPServer, v *vault.Vault) {
 		data, _ := json.MarshalIndent(map[string]interface{}{
 			"old_tag":       oldTag,
 			"new_tag":       newTag,
-			"notes_updated": count,
+			"notes_updated": len(res.Renamed),
+			"renamed_files": res.Renamed,
+			"failed_files":  res.Failed,
 		}, "", "  ")
 
 		return mcp.NewToolResultText(string(data)), nil

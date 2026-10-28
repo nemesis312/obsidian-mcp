@@ -13,17 +13,17 @@ type Canvas struct {
 
 // CanvasNode represents a node in a canvas
 type CanvasNode struct {
-	ID     string      `json:"id"`
-	Type   string      `json:"type"` // "text", "file", "link", "group"
-	X      float64     `json:"x"`
-	Y      float64     `json:"y"`
-	Width  float64     `json:"width"`
-	Height float64     `json:"height"`
-	Color  string      `json:"color,omitempty"`
-	Text   string      `json:"text,omitempty"`   // For text nodes
-	File   string      `json:"file,omitempty"`   // For file nodes
-	URL    string      `json:"url,omitempty"`    // For link nodes
-	Label  string      `json:"label,omitempty"`  // For groups
+	ID     string  `json:"id"`
+	Type   string  `json:"type"` // "text", "file", "link", "group"
+	X      float64 `json:"x"`
+	Y      float64 `json:"y"`
+	Width  float64 `json:"width"`
+	Height float64 `json:"height"`
+	Color  string  `json:"color,omitempty"`
+	Text   string  `json:"text,omitempty"`  // For text nodes
+	File   string  `json:"file,omitempty"`  // For file nodes
+	URL    string  `json:"url,omitempty"`   // For link nodes
+	Label  string  `json:"label,omitempty"` // For groups
 }
 
 // CanvasEdge represents an edge connecting nodes
