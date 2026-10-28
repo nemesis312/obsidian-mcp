@@ -1,5 +1,5 @@
 # Binaries
-obsidian-mcp
+/obsidian-mcp
 *.exe
 *.dll
 *.so
@@ -37,3 +37,10 @@ dist/
 # Local testing
 testdata/.vault/
 .env
+
+# Local agent/workflow tooling (never publish)
+.bc-agentic/
+.bc-agentic.json
+docs/agentic/
+CLAUDE.md
+.claude/
