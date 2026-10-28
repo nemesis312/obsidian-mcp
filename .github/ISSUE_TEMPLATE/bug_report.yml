@@ -1,0 +1,49 @@
+name: Bug report
+description: Report something that is not working
+labels: ["bug"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the bug and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Tool name and arguments used, if relevant.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: obsidian-mcp version
+      description: Output of `obsidian-mcp --version`.
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Linux
+        - Windows
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: client
+    attributes:
+      label: MCP client
+      description: For example Claude Desktop, Claude Code, VS Code Copilot.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: stderr output from the server. Remove private note content.
+      render: shell
