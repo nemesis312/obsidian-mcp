@@ -22,6 +22,9 @@ var ErrBusy = errors.New("vault is busy: another obsidian-mcp process is writing
 const (
 	lockMinBackoff = 5 * time.Millisecond
 	lockMaxBackoff = 50 * time.Millisecond
+	// lockOpenRetries bounds the retries of a lock file open that failed
+	// with ENOENT (see openLockFile).
+	lockOpenRetries = 10
 )
 
 // writeGuard serializes writes to one vault, within this process and across
@@ -119,9 +122,19 @@ func (g *writeGuard) openLockFile() (*os.File, error) {
 	}
 
 	name := lockDirName + "/" + lockFileName
-	f, err := r.OpenFile(name, os.O_RDWR|os.O_CREATE, 0o644)
-	if err != nil {
-		return nil, lockError(err)
+	// On darwin, openat(O_CREAT) can fail with ENOENT while another process
+	// creates the same file, so a fresh vault's first concurrent locks need
+	// a few bounded retries.
+	var f *os.File
+	for attempt := 0; ; attempt++ {
+		f, err = r.OpenFile(name, os.O_RDWR|os.O_CREATE, 0o644)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, fs.ErrNotExist) || attempt == lockOpenRetries {
+			return nil, lockError(err)
+		}
+		time.Sleep(lockMinBackoff)
 	}
 	fi, err = r.Lstat(name)
 	if err == nil && !fi.Mode().IsRegular() {

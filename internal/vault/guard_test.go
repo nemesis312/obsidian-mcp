@@ -341,3 +341,33 @@ func TestLockFileNeverListed(t *testing.T) {
 		t.Fatalf("ValidatePath(%s/x.md) = %v, want path_violation", lockDirName, err)
 	}
 }
+
+// TestGuardFirstLockConcurrent covers two processes taking the lock of a
+// fresh vault at the same moment: both create the lock directory and file,
+// and neither may fail. Separate guards stand in for separate processes
+// (they share no in-process lock). On darwin, openat(O_CREAT) can report
+// ENOENT while another opener is creating the same file.
+func TestGuardFirstLockConcurrent(t *testing.T) {
+	for round := range 200 {
+		root := tempRoot(t)
+		var wg sync.WaitGroup
+		errs := make(chan error, 2)
+		for range 2 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				unlock, err := newWriteGuard(root, defaultLockTimeout).lock()
+				if err != nil {
+					errs <- err
+					return
+				}
+				unlock()
+			}()
+		}
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			t.Fatalf("round %d: first lock failed: %v", round, err)
+		}
+	}
+}
