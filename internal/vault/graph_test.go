@@ -275,6 +275,42 @@ func TestUnreadableSubdirSkipped(t *testing.T) {
 	}
 }
 
+// A readable but non-searchable subdirectory (0644: its names can be listed,
+// its entries cannot be stat'ed) is skipped too, at any depth. A
+// non-searchable vault root still fails the walk.
+func TestNonSearchableSubdirSkipped(t *testing.T) {
+	skipNoChmod(t)
+	v := newTestVault(t)
+	writeRaw(t, v, "A.md", "[[B]]")
+	writeRaw(t, v, "B.md", "")
+	writeRaw(t, v, "Lonely.md", "")
+	writeRaw(t, v, "rx/x.md", "[[A]]")
+	writeRaw(t, v, "deep/er/rx/y.md", "[[A]]")
+	writeRaw(t, v, "deep/er/z.md", "")
+	chmod(t, filepath.Join(v.Root(), "rx"), 0o644)
+	chmod(t, filepath.Join(v.Root(), "deep", "er", "rx"), 0o644)
+
+	orphans, err := v.GetOrphanedNotes()
+	if err != nil {
+		t.Fatalf("GetOrphanedNotes with a non-searchable subdir: %v", err)
+	}
+	if strings.Join(orphans, ",") != "Lonely.md,deep/er/z.md" {
+		t.Errorf("orphans = %v, want Lonely.md,deep/er/z.md", orphans)
+	}
+	if _, err := v.ListFiles(); err != nil {
+		t.Errorf("ListFiles: %v", err)
+	}
+
+	root := newTestVault(t)
+	writeRaw(t, root, "A.md", "")
+	chmod(t, root.Root(), 0o644)
+	if _, err := root.StatNotes(); err == nil {
+		t.Error("StatNotes on a non-searchable vault root: want an error")
+	} else if strings.Contains(err.Error(), root.Root()) {
+		t.Errorf("walk error leaks root: %q", err)
+	}
+}
+
 // A failed first Build must not be remembered: once the cause is gone the
 // next graph call builds the index. An unreadable vault root still fails.
 func TestLinkIndexRetriesAfterBuildFailure(t *testing.T) {
@@ -317,7 +353,13 @@ func skipNoChmod(t *testing.T) {
 // lock makes dir unreadable until the test ends.
 func lock(t *testing.T, dir string) {
 	t.Helper()
-	if err := os.Chmod(dir, 0); err != nil {
+	chmod(t, dir, 0)
+}
+
+// chmod sets dir's mode until the test ends.
+func chmod(t *testing.T, dir string, mode os.FileMode) {
+	t.Helper()
+	if err := os.Chmod(dir, mode); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })

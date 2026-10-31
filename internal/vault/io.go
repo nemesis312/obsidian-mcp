@@ -18,16 +18,21 @@ var _ index.Source = (*Vault)(nil)
 // walkVault walks the vault without following symlinks (info is from Lstat),
 // skipping every hidden file or directory, which covers .obsidian and .git.
 // fn gets each non-directory entry with its vault-relative "/" path. A
-// subdirectory that cannot be read for lack of permission is skipped; any
-// error on the root fails the walk. Walk errors never contain the absolute
-// vault root.
+// subdirectory that cannot be read or searched for lack of permission is
+// skipped; any error on the root, including an entry of the root that cannot
+// be stat'ed, fails the walk. Walk errors never contain the absolute vault
+// root.
 func (v *Vault) walkVault(fn func(rel string, info os.FileInfo)) error {
 	return filepath.Walk(v.root, func(p string, info os.FileInfo, err error) error {
 		if err != nil {
 			if p != v.root && errors.Is(err, fs.ErrNotExist) {
 				return nil // removed while walking
 			}
-			if p != v.root && info != nil && info.IsDir() && errors.Is(err, fs.ErrPermission) {
+			if p != v.root && errors.Is(err, fs.ErrPermission) && (info != nil && info.IsDir() || filepath.Dir(p) != v.root) {
+				// An unreadable subdirectory (info is the dir), or an entry
+				// of a non-searchable one that cannot be stat'ed (info is
+				// nil): filepath.Walk drops that entry and goes on. The
+				// parent is never the root: a non-searchable root fails.
 				return filepath.SkipDir
 			}
 			return v.walkError(p, err)
