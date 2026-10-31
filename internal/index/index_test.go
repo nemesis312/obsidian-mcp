@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -596,5 +597,39 @@ func TestEmptyResultsAreNonNil(t *testing.T) {
 	}
 	if o := ix.Orphans(); o == nil {
 		t.Error("Orphans nil")
+	}
+}
+
+// Many notes sharing one basename and one huge note repeating a link to it
+// must not cost refs x candidates: Build and an Update that adds a path both
+// stay well under 2s, under -race too.
+func TestManyDuplicateBasenamesAndRefs(t *testing.T) {
+	const k, refs = 1000, 200_000
+	notes := map[string]string{"big.md": strings.Repeat("[[index]] ", refs)}
+	for i := 0; i < k; i++ {
+		notes[fmt.Sprintf("d%d/index.md", i)] = ""
+	}
+	src := newFake(notes)
+
+	start := time.Now()
+	ix := build(t, src)
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("Build took %v, want under 2s", d)
+	}
+	out, err := ix.Outgoing("big.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 1 || !out[0].Ambiguous || out[0].To != "d0/index.md" {
+		t.Fatalf("Outgoing(big.md) = %+v", out)
+	}
+
+	src.set("new/index.md", "")
+	start = time.Now()
+	if err := ix.Update("new/index.md"); err != nil {
+		t.Fatal(err)
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("Update adding a path took %v, want under 2s", d)
 	}
 }

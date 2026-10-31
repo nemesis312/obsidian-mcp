@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"path"
 	"sort"
 	"strings"
 	"sync"
@@ -442,12 +443,14 @@ func (ix *Index) reindex(pathsChanged bool, changed []*entry) {
 			atts = append(atts, p)
 		}
 		ix.resolver = links.NewResolver(notes, atts)
+		memo := resolveMemo{}
 		for _, e := range ix.notes {
-			e.Out = ix.resolve(e)
+			e.Out = ix.resolve(e, memo)
 		}
 	} else {
+		memo := resolveMemo{}
 		for _, e := range changed {
-			e.Out = ix.resolve(e)
+			e.Out = ix.resolve(e, memo)
 		}
 	}
 	in := make(map[string][]Edge)
@@ -469,21 +472,57 @@ type edgeKey struct {
 	to   string
 }
 
-func (ix *Index) resolve(e *entry) []Edge {
+// memoKey is what a resolution depends on besides the resolver: the source
+// note's folder, the target as written and whether it is a markdown link
+// (wikilinks and embeds resolve alike). The raw target is a finer key than
+// links.Key(target), so a memo hit is always exact.
+type memoKey struct {
+	dir      string
+	target   string
+	markdown bool
+}
+
+type memoVal struct {
+	toKind    NodeKind
+	to        string
+	ambiguous bool
+}
+
+// resolveMemo caches resolutions for one resolver, so a target shared by many
+// notes in a folder is resolved once, however many candidates it has.
+type resolveMemo map[memoKey]memoVal
+
+func (ix *Index) resolveRef(from string, ref links.Ref, memo resolveMemo) memoVal {
+	// An empty target is the source note itself: not shared across notes.
+	k := memoKey{path.Dir(from), ref.Target, ref.Kind == links.KindMarkdown}
+	if ref.Target != "" {
+		if v, ok := memo[k]; ok {
+			return v
+		}
+	}
+	res := ix.resolver.Resolve(from, ref)
+	var v memoVal
+	switch {
+	case res.Status == links.Unresolved:
+		v.toKind, v.to = NodeGhost, links.Key(ref.Target)
+	case res.Attachment:
+		v.toKind, v.to = NodeAttachment, res.Path
+	default:
+		v.toKind, v.to = NodeNote, res.Path
+	}
+	v.ambiguous = res.Status == links.Ambiguous
+	if ref.Target != "" {
+		memo[k] = v
+	}
+	return v
+}
+
+func (ix *Index) resolve(e *entry, memo resolveMemo) []Edge {
 	out := []Edge{}
 	seen := map[edgeKey]bool{}
 	for _, ref := range e.refs {
-		res := ix.resolver.Resolve(e.Path, ref)
-		edge := Edge{From: e.Path, Kind: ref.Kind, Raw: ref.Raw}
-		switch {
-		case res.Status == links.Unresolved:
-			edge.ToKind, edge.To = NodeGhost, links.Key(ref.Target)
-		case res.Attachment:
-			edge.ToKind, edge.To = NodeAttachment, res.Path
-		default:
-			edge.ToKind, edge.To = NodeNote, res.Path
-		}
-		edge.Ambiguous = res.Status == links.Ambiguous
+		v := ix.resolveRef(e.Path, ref, memo)
+		edge := Edge{From: e.Path, To: v.to, ToKind: v.toKind, Kind: ref.Kind, Ambiguous: v.ambiguous, Raw: ref.Raw}
 		k := edgeKey{edge.ToKind, edge.To}
 		if seen[k] {
 			continue
@@ -494,8 +533,28 @@ func (ix *Index) resolve(e *entry) []Edge {
 	return out
 }
 
+// refKey identifies refs that always resolve alike from the same note.
+type refKey struct {
+	kind   links.Kind
+	target string // links.Key(Target)
+}
+
+// parse extracts a note's refs, keeping only the first ref per (Kind,
+// Key(Target)): repeats resolve to the same edge, and dropping them bounds
+// memory and resolve work by distinct targets, not by link count.
 func parse(path, content string) *entry {
-	e := &entry{Note: Note{Path: path}, refs: links.Extract(content)}
+	all := links.Extract(content)
+	refs := make([]links.Ref, 0, len(all))
+	seen := make(map[refKey]bool, len(all))
+	for _, r := range all {
+		k := refKey{r.Kind, links.Key(r.Target)}
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		refs = append(refs, r)
+	}
+	e := &entry{Note: Note{Path: path}, refs: refs}
 	if fm, _, err := markdown.ParseFrontmatter(content); err == nil && fm != nil {
 		e.Frontmatter = fm.Data
 	}
