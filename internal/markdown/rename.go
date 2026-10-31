@@ -70,94 +70,14 @@ func RenameTag(content, oldTag, newTag string) string {
 // RenameInline renames inline tags in markdown text, skipping fenced code
 // blocks and inline code spans. Line endings and all other text are preserved.
 func (r *TagRenamer) RenameInline(content string) string {
-	lines := strings.Split(content, "\n")
-	var fenceChar byte
-	var fenceLen int
-	for i, line := range lines {
-		stripped := strings.TrimLeft(line, " ")
-		indent := len(line) - len(stripped)
-		trimmed := strings.TrimRight(stripped, "\r")
-		if fenceLen > 0 {
-			if indent < 4 && isClosingFence(trimmed, fenceChar, fenceLen) {
-				fenceLen = 0
-			}
-			continue
-		}
-		if c, n := openingFence(trimmed); indent < 4 && n >= 3 {
-			fenceChar, fenceLen = c, n
-			continue
-		}
-		lines[i] = r.renameOutsideInlineCode(line)
-	}
-	return strings.Join(lines, "\n")
-}
-
-func openingFence(s string) (byte, int) {
-	if s == "" || (s[0] != '`' && s[0] != '~') {
-		return 0, 0
-	}
-	c := s[0]
-	n := 0
-	for n < len(s) && s[n] == c {
-		n++
-	}
-	if c == '`' && strings.Contains(s[n:], "`") {
-		return 0, 0 // backtick info strings cannot contain backticks: inline code
-	}
-	return c, n
-}
-
-func isClosingFence(s string, c byte, minLen int) bool {
-	n := 0
-	for n < len(s) && s[n] == c {
-		n++
-	}
-	return n >= minLen && strings.TrimSpace(s[n:]) == ""
-}
-
-func (r *TagRenamer) renameOutsideInlineCode(line string) string {
-	if !strings.Contains(line, "#") {
-		return line
-	}
 	var out strings.Builder
-	start := 0 // start of current non-code chunk
-	i := 0
-	for i < len(line) {
-		if line[i] != '`' {
-			i++
-			continue
-		}
-		j := i
-		for j < len(line) && line[j] == '`' {
-			j++
-		}
-		n := j - i
-		// find a closing run of exactly n backticks
-		closeAt := -1
-		for k := j; k < len(line); {
-			if line[k] != '`' {
-				k++
-				continue
-			}
-			m := k
-			for m < len(line) && line[m] == '`' {
-				m++
-			}
-			if m-k == n {
-				closeAt = m
-				break
-			}
-			k = m
-		}
-		if closeAt < 0 {
-			i = j // unmatched run is literal text
-			continue
-		}
-		out.WriteString(r.renameText(line[start:i]))
-		out.WriteString(line[i:closeAt])
-		start, i = closeAt, closeAt
+	last := 0
+	for _, cr := range codeRanges(content) {
+		out.WriteString(r.renameText(content[last:cr[0]]))
+		out.WriteString(content[cr[0]:cr[1]])
+		last = cr[1]
 	}
-	out.WriteString(r.renameText(line[start:]))
+	out.WriteString(r.renameText(content[last:]))
 	return out.String()
 }
 
