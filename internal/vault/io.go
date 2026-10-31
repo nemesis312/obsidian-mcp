@@ -60,7 +60,15 @@ func (v *Vault) walkError(p string, err error) error {
 	return fmt.Errorf("vault walk failed at %s: %w", filepath.ToSlash(rel), err)
 }
 
-func isNotePath(rel string) bool { return strings.HasSuffix(rel, ".md") }
+// hasExtFold reports whether rel ends in ext, ignoring case, as the link
+// resolver does.
+func hasExtFold(rel, ext string) bool {
+	return len(rel) >= len(ext) && strings.EqualFold(rel[len(rel)-len(ext):], ext)
+}
+
+func isNotePath(rel string) bool { return hasExtFold(rel, ".md") }
+
+func isCanvasPath(rel string) bool { return hasExtFold(rel, ".canvas") }
 
 // ListFiles returns all markdown files in the vault, as vault-relative paths
 // using "/".
@@ -93,7 +101,7 @@ func (v *Vault) StatNotes() ([]index.FileStat, error) {
 func (v *Vault) StatAttachments() ([]index.FileStat, error) {
 	var out []index.FileStat
 	err := v.walkVault(func(rel string, info os.FileInfo) {
-		if !info.Mode().IsRegular() || isNotePath(rel) || strings.HasSuffix(rel, ".canvas") {
+		if !info.Mode().IsRegular() || isNotePath(rel) || isCanvasPath(rel) {
 			return
 		}
 		out = append(out, index.FileStat{Path: rel, Size: info.Size(), ModTime: info.ModTime()})
@@ -106,7 +114,7 @@ func (v *Vault) StatAttachments() ([]index.FileStat, error) {
 func (v *Vault) ListCanvases() ([]string, error) {
 	var canvases []string
 	err := v.walkVault(func(rel string, _ os.FileInfo) {
-		if strings.HasSuffix(rel, ".canvas") {
+		if isCanvasPath(rel) {
 			canvases = append(canvases, rel)
 		}
 	})

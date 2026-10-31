@@ -3,6 +3,7 @@ package vault
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -248,5 +249,91 @@ func TestSourceReadNoteKeepsContainment(t *testing.T) {
 	}
 	if len(out) != 0 {
 		t.Errorf("escaping note content was indexed: %+v", out)
+	}
+}
+
+// A failed first Build must not be remembered: once the cause is gone the
+// next graph call builds the index.
+func TestLinkIndexRetriesAfterBuildFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod 000 does not block directory reads on Windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	v := newTestVault(t)
+	writeRaw(t, v, "A.md", "x")
+	locked := filepath.Join(v.Root(), "locked")
+	writeRaw(t, v, "locked/n.md", "x")
+	if err := os.Chmod(locked, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+
+	_, err := v.GetOrphanedNotes()
+	if err == nil {
+		t.Fatal("want a build error while locked/ is unreadable")
+	}
+	if strings.Contains(err.Error(), v.Root()) {
+		t.Errorf("build error leaks root: %q", err)
+	}
+
+	if err := os.Chmod(locked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	orphans, err := v.GetOrphanedNotes()
+	if err != nil {
+		t.Fatalf("second call after restoring the mode: %v", err)
+	}
+	if strings.Join(orphans, ",") != "A.md,locked/n.md" {
+		t.Errorf("orphans = %v", orphans)
+	}
+}
+
+// ".MD" is a note in any case, as the resolver treats it: listed by
+// StatNotes, not StatAttachments, and [[X]] resolves to it as a note.
+func TestUppercaseMDIsANote(t *testing.T) {
+	v := newTestVault(t)
+	writeRaw(t, v, "X.MD", "upper")
+	writeRaw(t, v, "A.md", "[[X]]")
+	writeRaw(t, v, "b.Canvas", "{}")
+
+	notes, err := v.StatNotes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var paths []string
+	for _, n := range notes {
+		paths = append(paths, n.Path)
+	}
+	sort.Strings(paths)
+	if strings.Join(paths, ",") != "A.md,X.MD" {
+		t.Errorf("StatNotes = %v, want A.md,X.MD", paths)
+	}
+	atts, err := v.StatAttachments()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(atts) != 0 {
+		t.Errorf("StatAttachments = %+v, want none (X.MD is a note, b.Canvas a canvas)", atts)
+	}
+
+	out, err := v.GetOutgoingLinks("A.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 1 || out[0].To != "X.MD" || out[0].ToKind != index.NodeNote {
+		t.Fatalf("outgoing = %+v, want note edge to X.MD", out)
+	}
+	// A write through the vault and the next Refresh agree on the kind.
+	if err := v.WriteNote("X.MD", "changed"); err != nil {
+		t.Fatal(err)
+	}
+	out, err = v.GetOutgoingLinks("A.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 1 || out[0].ToKind != index.NodeNote {
+		t.Fatalf("after write+refresh outgoing = %+v", out)
 	}
 }

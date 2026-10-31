@@ -15,10 +15,10 @@ type Vault struct {
 	security *SecurityLayer
 
 	// The link index is built lazily on the first graph call. idx is nil
-	// until then; writers update it only once it exists.
-	idxOnce sync.Once
-	idxErr  error
-	idx     atomic.Pointer[index.Index]
+	// until a Build succeeds; writers update it only once it exists. idxMu
+	// serializes Build attempts; a failed attempt is not remembered.
+	idxMu sync.Mutex
+	idx   atomic.Pointer[index.Index]
 }
 
 func New(root string) (*Vault, error) {

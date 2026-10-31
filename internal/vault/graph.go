@@ -10,20 +10,22 @@ import (
 )
 
 // linkIndex returns the vault's link index, building it on first use. A
-// failed Build is remembered and returned on every later call.
+// failed Build is not remembered: the next call tries again.
 func (v *Vault) linkIndex() (*index.Index, error) {
-	v.idxOnce.Do(func() {
-		ix, err := index.Build(v)
-		if err != nil {
-			v.idxErr = err
-			return
-		}
-		v.idx.Store(ix)
-	})
 	if ix := v.idx.Load(); ix != nil {
 		return ix, nil
 	}
-	return nil, v.idxErr
+	v.idxMu.Lock()
+	defer v.idxMu.Unlock()
+	if ix := v.idx.Load(); ix != nil {
+		return ix, nil
+	}
+	ix, err := index.Build(v)
+	if err != nil {
+		return nil, err
+	}
+	v.idx.Store(ix)
+	return ix, nil
 }
 
 // lookupKey turns a note path argument into the form the index matches on:
