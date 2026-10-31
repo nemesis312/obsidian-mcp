@@ -374,3 +374,73 @@ func TestReplaceWhileReaderOpenWindows(t *testing.T) {
 		t.Errorf("content = %q", got)
 	}
 }
+
+// retarget points the symlink link at target: atomically by rename where
+// the OS allows it, else (Windows, over a directory link) remove and rename.
+func retarget(t *testing.T, link, target string) {
+	t.Helper()
+	tmp := link + ".new"
+	if err := os.Symlink(target, tmp); err != nil {
+		t.Errorf("symlink: %v", err)
+		return
+	}
+	if err := os.Rename(tmp, link); err != nil {
+		if err := os.Remove(link); err != nil {
+			t.Errorf("remove: %v", err)
+		}
+		if err := os.Rename(tmp, link); err != nil {
+			t.Errorf("rename: %v", err)
+		}
+	}
+}
+
+// A symlinked note retargeted while delete_note waits for the guard: the
+// version is checked against the new target, so only that file may go.
+func TestDeleteNoteResolvesUnderGuard(t *testing.T) {
+	v := newTestVault(t)
+	put(t, v, "a.md", "A")
+	put(t, v, "b.md", "B")
+	link := filepath.Join(v.Root(), "n.md")
+	mustSymlink(t, "a.md", link)
+	writeLockHook = func() { retarget(t, link, "b.md") }
+	t.Cleanup(func() { writeLockHook = nil })
+
+	_, err := v.DeleteNote("n.md", VersionOf([]byte("B")))
+	var ce *ConflictError
+	if err != nil && !errors.As(err, &ce) {
+		t.Fatalf("err = %v, want nil or a ConflictError", err)
+	}
+	if _, serr := os.Stat(filepath.Join(v.Root(), "a.md")); serr != nil {
+		t.Fatalf("a.md was deleted although b's version was checked: %v", serr)
+	}
+	if err == nil {
+		if _, serr := os.Stat(filepath.Join(v.Root(), "b.md")); !errors.Is(serr, os.ErrNotExist) {
+			t.Errorf("delete succeeded but b.md (the checked file) remains: %v", serr)
+		}
+	}
+}
+
+// A symlinked folder retargeted while create_note waits for the guard: the
+// note is created where the folder points once the guard is held.
+func TestCreateNoteResolvesUnderGuard(t *testing.T) {
+	v := newTestVault(t)
+	for _, d := range []string{"x", "y"} {
+		if err := os.Mkdir(filepath.Join(v.Root(), d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	link := filepath.Join(v.Root(), "d")
+	mustSymlink(t, "x", link)
+	writeLockHook = func() { retarget(t, link, "y") }
+	t.Cleanup(func() { writeLockHook = nil })
+
+	if _, err := v.CreateNote("d/n.md", "c", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(v.Root(), "x", "n.md")); err == nil {
+		t.Error("note created in the folder resolved before the guard was taken")
+	}
+	if _, err := os.Stat(filepath.Join(v.Root(), "y", "n.md")); err != nil {
+		t.Errorf("note not created in the folder the link points to under the guard: %v", err)
+	}
+}

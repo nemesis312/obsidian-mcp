@@ -157,8 +157,7 @@ func (v *Vault) CreateNote(path, content string, frontmatter map[string]any) (No
 	if err != nil {
 		return NoteSnapshot{}, err
 	}
-	safePath, err := v.resolveNote(norm)
-	if err != nil {
+	if _, err := v.resolveNote(norm); err != nil {
 		return NoteSnapshot{}, err
 	}
 	out, ok := v.noteRel(norm)
@@ -182,6 +181,12 @@ func (v *Vault) CreateNote(path, content string, frontmatter map[string]any) (No
 			return err
 		}
 		defer unlock()
+		// Resolve again under the guard: a symlinked folder may have been
+		// retargeted while this call waited.
+		safePath, err := v.resolveNote(norm)
+		if err != nil {
+			return err
+		}
 		if err := os.MkdirAll(filepath.Dir(safePath), 0o755); err != nil {
 			return v.fsError("create directory for", out, err)
 		}
@@ -262,8 +267,7 @@ func (v *Vault) DeleteNote(arg, expected string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	safePath, err := v.resolveNote(rel)
-	if err != nil {
+	if _, err := v.resolveNote(rel); err != nil {
 		return "", err
 	}
 	if expected == "" {
@@ -287,6 +291,13 @@ func (v *Vault) DeleteNote(arg, expected string) (string, error) {
 		}
 		if cur := VersionOf([]byte(current)); cur != expected {
 			return &ConflictError{Path: rel, Current: cur}
+		}
+		// Resolve again under the guard, so the file removed is the one
+		// whose version was just checked, not the target rel had before
+		// this call waited (a symlink may have been retargeted).
+		safePath, err := v.resolveNote(rel)
+		if err != nil {
+			return err
 		}
 		if err := removeFile(safePath); err != nil {
 			return notFoundAs(arg, v.fsError("delete note", rel, err))
