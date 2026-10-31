@@ -3,6 +3,7 @@ package markdown_test
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nemesis312/obsidian-mcp/internal/markdown"
 )
@@ -21,6 +22,9 @@ func TestMaskCode(t *testing.T) {
 		{"unclosed backtick", "` [[X]]", "` [[X]]"},
 		{"unclosed fence", "```\n[[X]]", "   \n     "},
 		{"crlf", "#a\r\n```\r\n#b\r\n```\r\n", "#a\r\n   \r\n  \r\n   \r\n"},
+		{"four-space indent opens no code block", "    ```\n[[X]]\n    ```", "    ```\n[[X]]\n    ```"},
+		{"info string fence", "```go\n[[X]]\n```\n[[Y]]", "     \n     \n   \n[[Y]]"},
+		{"multi-backtick span", "``a`b`` [[Y]]", "        [[Y]]"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -40,5 +44,28 @@ func TestMaskCode(t *testing.T) {
 				t.Errorf("code content leaked: %q", got)
 			}
 		})
+	}
+}
+
+// distinctRuns returns one line of about n bytes made of backtick runs of
+// lengths 1, 2, 3, ... separated by "x": no run has a closer.
+func distinctRuns(n int) string {
+	var sb strings.Builder
+	for l := 1; sb.Len() < n; l++ {
+		sb.WriteString(strings.Repeat("`", l))
+		sb.WriteByte('x')
+	}
+	return sb.String()
+}
+
+func TestMaskCodeDistinctRunsLinear(t *testing.T) {
+	in := distinctRuns(4 << 20)
+	start := time.Now()
+	got := markdown.MaskCode(in)
+	if d := time.Since(start); d > time.Second {
+		t.Fatalf("MaskCode on 4 MB of distinct backtick runs took %v, want under 1s", d)
+	}
+	if got != in {
+		t.Fatal("unmatched runs must stay literal text")
 	}
 }

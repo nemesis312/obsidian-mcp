@@ -88,13 +88,17 @@ func isClosingFence(s string, c byte, minLen int) bool {
 // inlineCodeRanges returns the byte ranges of inline code spans in one line.
 // A span opens with a run of n backticks and closes with the next run of
 // exactly n backticks; an unmatched run is literal text.
+//
+// It is linear in the line length: the runs are collected once and each is
+// linked to the next run of the same length, so an opener with no closer is
+// known at once instead of rescanning the rest of the line.
 func inlineCodeRanges(line string) [][2]int {
 	if !strings.Contains(line, "`") {
 		return nil
 	}
-	var ranges [][2]int
-	i := 0
-	for i < len(line) {
+	type run struct{ start, end int }
+	var runs []run
+	for i := 0; i < len(line); {
 		if line[i] != '`' {
 			i++
 			continue
@@ -103,29 +107,29 @@ func inlineCodeRanges(line string) [][2]int {
 		for j < len(line) && line[j] == '`' {
 			j++
 		}
-		n := j - i
-		closeAt := -1
-		for k := j; k < len(line); {
-			if line[k] != '`' {
-				k++
-				continue
-			}
-			m := k
-			for m < len(line) && line[m] == '`' {
-				m++
-			}
-			if m-k == n {
-				closeAt = m
-				break
-			}
-			k = m
+		runs = append(runs, run{i, j})
+		i = j
+	}
+	next := make([]int, len(runs)) // index of the next run of the same length, or -1
+	last := map[int]int{}
+	for i := len(runs) - 1; i >= 0; i-- {
+		n := runs[i].end - runs[i].start
+		if k, ok := last[n]; ok {
+			next[i] = k
+		} else {
+			next[i] = -1
 		}
-		if closeAt < 0 {
-			i = j
+		last[n] = i
+	}
+	var ranges [][2]int
+	for i := 0; i < len(runs); {
+		k := next[i]
+		if k < 0 {
+			i++
 			continue
 		}
-		ranges = append(ranges, [2]int{i, closeAt})
-		i = closeAt
+		ranges = append(ranges, [2]int{runs[i].start, runs[k].end})
+		i = k + 1
 	}
 	return ranges
 }

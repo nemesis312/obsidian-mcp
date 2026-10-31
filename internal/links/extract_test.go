@@ -73,6 +73,7 @@ func TestExtractRobust(t *testing.T) {
 		{"unclosed md angle dest", strings.Repeat("[a](<x", 2<<20), nil},
 		{"unclosed fence", "```\n[[A]]\n[[B]]", nil},
 		{"invalid utf8", "\xff[[A]]", []string{"A"}},
+		{"4MB distinct backtick runs", distinctRuns(4<<20) + " [[A]]", []string{"A"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -90,4 +91,15 @@ func TestExtractRobust(t *testing.T) {
 			}
 		})
 	}
+}
+
+// distinctRuns returns one line of about n bytes made of backtick runs of
+// lengths 1, 2, 3, ... separated by "x": no run has a closer.
+func distinctRuns(n int) string {
+	var sb strings.Builder
+	for l := 1; sb.Len() < n; l++ {
+		sb.WriteString(strings.Repeat("`", l))
+		sb.WriteByte('x')
+	}
+	return sb.String()
 }
