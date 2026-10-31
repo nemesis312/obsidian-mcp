@@ -11,7 +11,8 @@ func newTestResolver() *links.Resolver {
 	return links.NewResolver(
 		[]string{
 			"Note.md", "sub/dir/Note2.md", "a/Dup.md", "b/c/Dup.md", "CaseTarget.md",
-			"café.md", "v1.2 notes.md", "x/Rel.md", "x/y/Deep.md",
+			"café.md", "v1.2 notes.md", "x/Rel.md", "x/y/Deep.md", "x/Note.md",
+			"s/t/Twin.md", "q/Twin.md",
 		},
 		[]string{"assets/img.png", "p/dup.png", "q/dup.png", "doc.pdf"},
 	)
@@ -28,39 +29,72 @@ func TestResolve(t *testing.T) {
 		ref  links.Ref
 		want links.Resolution
 	}{
-		{"basename", "Note.md", wiki("Note2"), links.Resolution{Status: links.Resolved, Path: "sub/dir/Note2.md"}},
-		{"ambiguous same folder", "a/Other.md", wiki("Dup"), links.Resolution{Status: links.Ambiguous, Path: "a/Dup.md", Candidates: []string{"a/Dup.md", "b/c/Dup.md"}}},
-		{"ambiguous same folder wins over fewer segments", "b/c/Other.md", wiki("Dup"), links.Resolution{Status: links.Ambiguous, Path: "b/c/Dup.md", Candidates: []string{"b/c/Dup.md", "a/Dup.md"}}},
-		{"ambiguous fewer segments", "z.md", wiki("Dup"), links.Resolution{Status: links.Ambiguous, Path: "a/Dup.md", Candidates: []string{"a/Dup.md", "b/c/Dup.md"}}},
+		// Rule 1: an empty target is the source note, for every kind.
+		{"heading only", "Note.md", wiki(""), links.Resolution{Status: links.Resolved, Path: "Note.md"}},
+		{"markdown heading only", "x/Other.md", md(""), links.Resolution{Status: links.Resolved, Path: "x/Other.md"}},
+
+		// Rule 2: "./" and "../" are relative to the source folder, with no fallback.
+		{"dot slash at root", "z.md", wiki("./Note"), links.Resolution{Status: links.Resolved, Path: "Note.md"}},
+		{"dot slash in folder", "x/Other.md", wiki("./Note"), links.Resolution{Status: links.Resolved, Path: "x/Note.md"}},
+		{"dot slash markdown", "x/Other.md", md("./Note.md"), links.Resolution{Status: links.Resolved, Path: "x/Note.md"}},
+		{"dot slash no fallback", "sub/Other.md", wiki("./Note"), links.Resolution{Status: links.Unresolved}},
+		{"dot slash no basename fallback", "z.md", md("./Rel.md"), links.Resolution{Status: links.Unresolved}},
+		{"dot slash case", "x/Other.md", wiki("./REL"), links.Resolution{Status: links.Resolved, Path: "x/Rel.md"}},
+		{"dot dot", "x/y/Other.md", md("../Rel.md"), links.Resolution{Status: links.Resolved, Path: "x/Rel.md"}},
+		{"dot dot wikilink", "x/y/Other.md", wiki("../Rel"), links.Resolution{Status: links.Resolved, Path: "x/Rel.md"}},
+		{"dot dot no fallback", "x/y/Other.md", wiki("../Note2"), links.Resolution{Status: links.Unresolved}},
+		{"dot slash attachment", "assets/N.md", embed("./img.png"), links.Resolution{Status: links.Resolved, Path: "assets/img.png", Attachment: true}},
+		{"markdown escape", "Note.md", md("../Note.md"), links.Resolution{Status: links.Unresolved}},
+		{"escape", "Note.md", wiki("../outside"), links.Resolution{Status: links.Unresolved}},
+		{"escape existing basename", "Note.md", wiki("../Note"), links.Resolution{Status: links.Unresolved}},
+		{"escape bare", "Note.md", wiki(".."), links.Resolution{Status: links.Unresolved}},
+		{"escape after cleaning", "x/Other.md", wiki("a/../../Note"), links.Resolution{Status: links.Unresolved}},
+
+		// Rule 3: a leading "/" is an exact path from the vault root.
+		{"leading slash is vault root", "x/Other.md", wiki("/Note"), links.Resolution{Status: links.Resolved, Path: "Note.md"}},
+		{"leading slash markdown", "x/Other.md", md("/Note.md"), links.Resolution{Status: links.Resolved, Path: "Note.md"}},
+		{"leading slash no basename", "Note.md", wiki("/Note2"), links.Resolution{Status: links.Unresolved}},
+		{"leading slash no suffix", "Note.md", wiki("/c/Dup"), links.Resolution{Status: links.Unresolved}},
+		{"only slash", "Note.md", wiki("/"), links.Resolution{Status: links.Unresolved}},
+
+		// Rule 4: an exact path from the vault root wins.
 		{"path match", "Note.md", wiki("b/c/Dup"), links.Resolution{Status: links.Resolved, Path: "b/c/Dup.md"}},
 		{"path match case", "Note.md", wiki("B/C/dup.MD"), links.Resolution{Status: links.Resolved, Path: "b/c/Dup.md"}},
-		{"path partial is not basename", "Note.md", wiki("c/Dup"), links.Resolution{Status: links.Unresolved}},
-		{"leading slash is vault root", "x/Other.md", wiki("/Note"), links.Resolution{Status: links.Resolved, Path: "Note.md"}},
+		{"clean inside", "Note.md", wiki("a/../b/c/Dup"), links.Resolution{Status: links.Resolved, Path: "b/c/Dup.md"}},
+		{"root note beats same folder", "x/Other.md", wiki("Note"), links.Resolution{Status: links.Resolved, Path: "Note.md"}},
+		{"root note beats same folder markdown", "x/Other.md", md("Note.md"), links.Resolution{Status: links.Resolved, Path: "Note.md"}},
 		{"case", "Note.md", wiki("casetarget"), links.Resolution{Status: links.Resolved, Path: "CaseTarget.md"}},
-		{"nfd", "Note.md", wiki("café"), links.Resolution{Status: links.Resolved, Path: "café.md"}},
+		{"nfd", "Note.md", wiki("café"), links.Resolution{Status: links.Resolved, Path: "café.md"}},
 		{"dotted name", "Note.md", wiki("v1.2 notes"), links.Resolution{Status: links.Resolved, Path: "v1.2 notes.md"}},
 		{"dotted name with md", "Note.md", wiki("v1.2 notes.md"), links.Resolution{Status: links.Resolved, Path: "v1.2 notes.md"}},
 		{"spaces", "z.md", wiki(" Note "), links.Resolution{Status: links.Resolved, Path: "Note.md"}},
 		{"md ext", "z.md", wiki("Note.md"), links.Resolution{Status: links.Resolved, Path: "Note.md"}},
 		{"MD ext", "z.md", wiki("Note.MD"), links.Resolution{Status: links.Resolved, Path: "Note.md"}},
-		{"dot slash", "z.md", wiki("./Note"), links.Resolution{Status: links.Resolved, Path: "Note.md"}},
-		{"markdown relative", "x/Other.md", md("Rel.md"), links.Resolution{Status: links.Resolved, Path: "x/Rel.md"}},
-		{"markdown relative beats basename", "x/y/Other.md", md("../Rel.md"), links.Resolution{Status: links.Resolved, Path: "x/Rel.md"}},
-		{"markdown basename fallback", "y.md", md("Rel.md"), links.Resolution{Status: links.Resolved, Path: "x/Rel.md"}},
-		{"markdown relative attachment", "Note.md", md("assets/img.png"), links.Resolution{Status: links.Resolved, Path: "assets/img.png", Attachment: true}},
-		{"markdown escape", "Note.md", md("../Note.md"), links.Resolution{Status: links.Unresolved}},
-		{"embed attachment", "Note.md", embed("img.png"), links.Resolution{Status: links.Resolved, Path: "assets/img.png", Attachment: true}},
+		{"markdown path attachment", "Note.md", md("assets/img.png"), links.Resolution{Status: links.Resolved, Path: "assets/img.png", Attachment: true}},
 		{"attachment path", "Note.md", embed("assets/img.png"), links.Resolution{Status: links.Resolved, Path: "assets/img.png", Attachment: true}},
+
+		// Rule 5: path-suffix match, then same folder, fewest segments, Key.
+		{"basename", "Note.md", wiki("Note2"), links.Resolution{Status: links.Resolved, Path: "sub/dir/Note2.md"}},
+		{"markdown basename", "y.md", md("Rel.md"), links.Resolution{Status: links.Resolved, Path: "x/Rel.md"}},
+		{"path suffix", "Note.md", wiki("c/Dup"), links.Resolution{Status: links.Resolved, Path: "b/c/Dup.md"}},
+		{"path suffix markdown", "Note.md", md("c/Dup.md"), links.Resolution{Status: links.Resolved, Path: "b/c/Dup.md"}},
+		{"path suffix two segments", "Note.md", wiki("SUB/dir/note2"), links.Resolution{Status: links.Resolved, Path: "sub/dir/Note2.md"}},
+		{"path suffix one segment", "Note.md", wiki("dir/Note2"), links.Resolution{Status: links.Resolved, Path: "sub/dir/Note2.md"}},
+		{"path suffix attachment", "Note.md", embed("Assets/img.png"), links.Resolution{Status: links.Resolved, Path: "assets/img.png", Attachment: true}},
+		{"ambiguous same folder", "a/Other.md", wiki("Dup"), links.Resolution{Status: links.Ambiguous, Path: "a/Dup.md", Candidates: []string{"a/Dup.md", "b/c/Dup.md"}}},
+		{"ambiguous same folder wins over fewer segments", "b/c/Other.md", wiki("Dup"), links.Resolution{Status: links.Ambiguous, Path: "b/c/Dup.md", Candidates: []string{"b/c/Dup.md", "a/Dup.md"}}},
+		{"ambiguous fewer segments", "z.md", wiki("Dup"), links.Resolution{Status: links.Ambiguous, Path: "a/Dup.md", Candidates: []string{"a/Dup.md", "b/c/Dup.md"}}},
+		{"twin same folder", "s/t/P.md", wiki("Twin"), links.Resolution{Status: links.Ambiguous, Path: "s/t/Twin.md", Candidates: []string{"s/t/Twin.md", "q/Twin.md"}}},
+		{"twin same folder markdown", "s/t/P.md", md("Twin.md"), links.Resolution{Status: links.Ambiguous, Path: "s/t/Twin.md", Candidates: []string{"s/t/Twin.md", "q/Twin.md"}}},
+		{"twin fewer segments", "P.md", wiki("Twin"), links.Resolution{Status: links.Ambiguous, Path: "q/Twin.md", Candidates: []string{"q/Twin.md", "s/t/Twin.md"}}},
+		{"embed attachment", "Note.md", embed("img.png"), links.Resolution{Status: links.Resolved, Path: "assets/img.png", Attachment: true}},
 		{"attachment case", "Note.md", embed("DOC.PDF"), links.Resolution{Status: links.Resolved, Path: "doc.pdf", Attachment: true}},
 		{"attachment ambiguous", "q/Note.md", embed("dup.png"), links.Resolution{Status: links.Ambiguous, Path: "q/dup.png", Candidates: []string{"q/dup.png", "p/dup.png"}, Attachment: true}},
+
+		// No match.
 		{"missing attachment", "Note.md", embed("nope.png"), links.Resolution{Status: links.Unresolved}},
 		{"ghost", "Note.md", wiki("Ghost"), links.Resolution{Status: links.Unresolved}},
-		{"heading only", "Note.md", wiki(""), links.Resolution{Status: links.Resolved, Path: "Note.md"}},
-		{"escape", "Note.md", wiki("../outside"), links.Resolution{Status: links.Unresolved}},
-		{"escape existing basename", "Note.md", wiki("../Note"), links.Resolution{Status: links.Unresolved}},
-		{"escape bare", "Note.md", wiki(".."), links.Resolution{Status: links.Unresolved}},
-		{"clean inside", "Note.md", wiki("a/../b/c/Dup"), links.Resolution{Status: links.Resolved, Path: "b/c/Dup.md"}},
-		{"only slash", "Note.md", wiki("/"), links.Resolution{Status: links.Unresolved}},
+		{"suffix not a whole segment", "Note.md", wiki("ub/dir/Note2"), links.Resolution{Status: links.Unresolved}},
 	}
 	r := newTestResolver()
 	for _, tt := range tests {
@@ -129,6 +163,42 @@ func TestResolveCaseOnlyDuplicates(t *testing.T) {
 	for arg, want := range map[string]string{"k/same": "K/SAME.md", "K/same.md": "K/SAME.md", "m/q": "M/q.md", "i/a.png": "I/a.png"} {
 		if got, ok := r.Lookup(arg); !ok || got != want {
 			t.Errorf("Lookup(%q) = %q, %v; want %q", arg, got, ok, want)
+		}
+	}
+}
+
+// Path-suffix matching compares whole segments, and several suffix matches
+// are Ambiguous with the usual tie-break.
+func TestResolvePathSuffix(t *testing.T) {
+	r := links.NewResolver([]string{"b/c/Dup.md", "d/e/c/Dup.md", "xc/Dup.md", "c/Dup.md", "Dup.md"}, nil)
+	for _, tc := range []struct {
+		from, target string
+		want         links.Resolution
+	}{
+		// "c/Dup" is an exact root path: it wins.
+		{"z.md", "c/Dup", links.Resolution{Status: links.Resolved, Path: "c/Dup.md"}},
+		// "e/c/Dup" matches one file only.
+		{"z.md", "e/c/Dup", links.Resolution{Status: links.Resolved, Path: "d/e/c/Dup.md"}},
+		// "Dup" is a root path too, so the same folder does not win.
+		{"b/c/x.md", "Dup", links.Resolution{Status: links.Resolved, Path: "Dup.md"}},
+	} {
+		if got := r.Resolve(tc.from, links.Ref{Kind: links.KindWikilink, Target: tc.target}); !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("Resolve(%q, %q) = %+v, want %+v", tc.from, tc.target, got, tc.want)
+		}
+	}
+
+	// No exact path: every whole-segment suffix match is a candidate;
+	// "xc/Dup.md" never matches "c/Dup".
+	r = links.NewResolver([]string{"b/c/Dup.md", "d/e/c/Dup.md", "xc/Dup.md", "f/c/Dup.md"}, nil)
+	for _, tc := range []struct {
+		from string
+		want links.Resolution
+	}{
+		{"z.md", links.Resolution{Status: links.Ambiguous, Path: "b/c/Dup.md", Candidates: []string{"b/c/Dup.md", "f/c/Dup.md", "d/e/c/Dup.md"}}},
+		{"d/e/c/x.md", links.Resolution{Status: links.Ambiguous, Path: "d/e/c/Dup.md", Candidates: []string{"d/e/c/Dup.md", "b/c/Dup.md", "f/c/Dup.md"}}},
+	} {
+		if got := r.Resolve(tc.from, links.Ref{Kind: links.KindMarkdown, Target: "c/Dup.md"}); !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("Resolve(%q, c/Dup.md) = %+v, want %+v", tc.from, got, tc.want)
 		}
 	}
 }
