@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nemesis312/obsidian-mcp/internal/links"
@@ -75,15 +76,28 @@ type entry struct {
 type Index struct {
 	src Source
 
+	// refreshMu serializes Refresh. refreshReq counts Refresh calls and
+	// refreshCovered is the last call number a finished walk is fresh for, so
+	// callers that queued behind a walk that started after them return at once.
+	refreshMu      sync.Mutex
+	refreshReq     atomic.Uint64
+	refreshCovered uint64
+
 	mu       sync.RWMutex
 	notes    map[string]*entry
 	atts     map[string]struct{}
 	resolver *links.Resolver
 	in       map[string][]Edge // note path -> edges pointing to it, self-links included
-	gen      map[string]uint64 // bumped by Update/Remove so a concurrent Refresh does not apply stale reads
+	// epoch is bumped by every Update and Remove; written records the epoch
+	// of the last Update/Remove per path. A Refresh snapshots epoch before
+	// its stat walk and leaves alone any path written after that snapshot,
+	// because its walk and reads may be older than that write.
+	epoch   uint64
+	written map[string]uint64
 }
 
-// Build stats and reads the whole vault.
+// Build stats and reads the whole vault. It fails only when the stat walk
+// fails; an unreadable note is indexed as an empty note.
 func Build(src Source) (*Index, error) {
 	ix := &Index{
 		src:      src,
@@ -91,7 +105,7 @@ func Build(src Source) (*Index, error) {
 		atts:     map[string]struct{}{},
 		resolver: links.NewResolver(nil, nil),
 		in:       map[string][]Edge{},
-		gen:      map[string]uint64{},
+		written:  map[string]uint64{},
 	}
 	if err := ix.Refresh(); err != nil {
 		return nil, err
@@ -102,15 +116,29 @@ func Build(src Source) (*Index, error) {
 type readResult struct {
 	path    string
 	stat    FileStat
-	gen     uint64
 	content string
 	err     error
 }
 
 // Refresh stats the vault, re-reads only new or changed notes, drops deleted
 // ones and re-resolves every edge when the set of paths changed. When nothing
-// changed it costs one stat walk and no reads.
+// changed it costs one stat walk and no reads. It returns an error only when
+// the stat walk fails. A note that cannot be read (other than not existing)
+// is indexed as an empty note with its stat recorded, so it is not retried
+// until its stat changes.
 func (ix *Index) Refresh() error {
+	ticket := ix.refreshReq.Add(1)
+	ix.refreshMu.Lock()
+	defer ix.refreshMu.Unlock()
+	if ix.refreshCovered >= ticket {
+		return nil // a walk that started after this call already finished
+	}
+	covered := ix.refreshReq.Load()
+
+	ix.mu.RLock()
+	snap := ix.epoch
+	ix.mu.RUnlock()
+
 	noteStats, err := ix.src.StatNotes()
 	if err != nil {
 		return fmt.Errorf("index: stat notes: %w", err)
@@ -127,18 +155,19 @@ func (ix *Index) Refresh() error {
 	// Diff against the current state under the read lock.
 	var toRead []readResult
 	var deleted []string
-	var deletedGen []uint64
 	ix.mu.RLock()
 	for p, s := range walked {
+		if ix.written[p] > snap {
+			continue
+		}
 		e, ok := ix.notes[p]
 		if !ok || e.stat.Size != s.Size || !e.stat.ModTime.Equal(s.ModTime) {
-			toRead = append(toRead, readResult{path: p, stat: s, gen: ix.gen[p]})
+			toRead = append(toRead, readResult{path: p, stat: s})
 		}
 	}
 	for p := range ix.notes {
-		if _, ok := walked[p]; !ok {
+		if _, ok := walked[p]; !ok && ix.written[p] <= snap {
 			deleted = append(deleted, p)
-			deletedGen = append(deletedGen, ix.gen[p])
 		}
 	}
 	attsChanged := len(attStats) != len(ix.atts)
@@ -152,43 +181,57 @@ func (ix *Index) Refresh() error {
 	}
 	ix.mu.RUnlock()
 
-	if len(toRead) == 0 && len(deleted) == 0 && !attsChanged {
-		return nil
+	if len(toRead) > 0 || len(deleted) > 0 || attsChanged {
+		for i := range toRead {
+			toRead[i].content, toRead[i].err = ix.src.ReadNote(toRead[i].path)
+		}
+		ix.apply(snap, toRead, deleted, attsChanged, attStats)
 	}
 
-	for i := range toRead {
-		toRead[i].content, toRead[i].err = ix.src.ReadNote(toRead[i].path)
+	ix.mu.Lock()
+	// Refresh calls are serialized, so no later Refresh can hold a snapshot
+	// older than this one: entries at or below it are no longer needed.
+	for p, w := range ix.written {
+		if w <= snap {
+			delete(ix.written, p)
+		}
 	}
+	ix.mu.Unlock()
+	ix.refreshCovered = covered
+	return nil
+}
 
+func (ix *Index) apply(snap uint64, toRead []readResult, deleted []string, attsChanged bool, attStats []FileStat) {
 	ix.mu.Lock()
 	defer ix.mu.Unlock()
 	pathsChanged := false
 	var changed []*entry
-	var errs []error
 	for _, r := range toRead {
-		if ix.gen[r.path] != r.gen {
+		if ix.written[r.path] > snap {
 			continue // Update or Remove ran meanwhile; it wins
 		}
-		if r.err != nil {
-			if _, ok := ix.notes[r.path]; ok {
+		_, existed := ix.notes[r.path]
+		if errors.Is(r.err, fs.ErrNotExist) {
+			if existed {
 				delete(ix.notes, r.path)
 				pathsChanged = true
 			}
-			if !errors.Is(r.err, fs.ErrNotExist) {
-				errs = append(errs, fmt.Errorf("index: read %s: %w", r.path, r.err))
-			}
 			continue
 		}
-		if _, ok := ix.notes[r.path]; !ok {
-			pathsChanged = true
+		content := r.content
+		if r.err != nil {
+			content = "" // unreadable: an existing note with no content
 		}
-		e := parse(r.path, r.content)
+		e := parse(r.path, content)
 		e.stat = r.stat
 		ix.notes[r.path] = e
 		changed = append(changed, e)
+		if !existed {
+			pathsChanged = true
+		}
 	}
-	for i, p := range deleted {
-		if ix.gen[p] != deletedGen[i] {
+	for _, p := range deleted {
+		if ix.written[p] > snap {
 			continue
 		}
 		if _, ok := ix.notes[p]; ok {
@@ -204,11 +247,19 @@ func (ix *Index) Refresh() error {
 		pathsChanged = true
 	}
 	ix.reindex(pathsChanged, changed)
-	return errors.Join(errs...)
+}
+
+// markWrittenLocked records an Update or Remove of path. ix.mu must be held
+// for writing.
+func (ix *Index) markWrittenLocked(path string) {
+	ix.epoch++
+	ix.written[path] = ix.epoch
 }
 
 // Update re-reads one note now. It is used after the server writes a note.
-// If the read fails the note is removed from the index and the error returned.
+// If the note does not exist it is removed from the index. If it exists but
+// cannot be read it is indexed as an empty note. In both cases the read
+// error is returned.
 func (ix *Index) Update(path string) error {
 	path = slash(path)
 	ix.mu.RLock()
@@ -223,18 +274,24 @@ func (ix *Index) Update(path string) error {
 
 	ix.mu.Lock()
 	defer ix.mu.Unlock()
-	ix.gen[path]++
-	if err != nil {
-		if _, ok := ix.notes[path]; ok {
+	ix.markWrittenLocked(path)
+	_, existed := ix.notes[path]
+	if errors.Is(err, fs.ErrNotExist) {
+		if existed {
 			delete(ix.notes, path)
 			ix.reindex(true, nil)
 		}
 		return fmt.Errorf("index: update %s: %w", path, err)
 	}
-	_, existed := ix.notes[path]
+	if err != nil {
+		content = ""
+	}
 	e := parse(path, content)
 	ix.notes[path] = e
 	ix.reindex(!existed, []*entry{e})
+	if err != nil {
+		return fmt.Errorf("index: update %s: %w", path, err)
+	}
 	return nil
 }
 
@@ -250,7 +307,7 @@ func (ix *Index) Remove(path string) {
 		}
 		path = c
 	}
-	ix.gen[path]++
+	ix.markWrittenLocked(path)
 	delete(ix.notes, path)
 	ix.reindex(true, nil)
 }
@@ -286,7 +343,7 @@ func (ix *Index) Outgoing(path string) ([]Edge, error) {
 	if err != nil {
 		return nil, err
 	}
-	return append([]Edge(nil), e.Out...), nil
+	return append([]Edge{}, e.Out...), nil
 }
 
 // Backlinks returns the edges from other notes to path, sorted by From.
@@ -335,7 +392,7 @@ func (ix *Index) Graph() ([]GraphNode, []Edge) {
 	defer ix.mu.RUnlock()
 	nodes := make([]GraphNode, 0, len(ix.notes))
 	seen := map[GraphNode]bool{}
-	var edges []Edge
+	edges := []Edge{}
 	for p, e := range ix.notes {
 		nodes = append(nodes, GraphNode{ID: p, Kind: NodeNote})
 		for _, edge := range e.Out {

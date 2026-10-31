@@ -20,6 +20,11 @@ type fakeSource struct {
 	atts  map[string]index.FileStat
 	reads atomic.Int64
 	clock time.Time
+	// failRead makes ReadNote fail for a path with the given error.
+	failRead map[string]error
+	// onStatAtts, when set, runs once inside StatAttachments: after the note
+	// walk, before the index diffs it.
+	onStatAtts func()
 }
 
 type fakeFile struct {
@@ -50,6 +55,25 @@ func (f *fakeSource) set(p, content string) {
 	f.notes[p] = fakeFile{content: content, mod: f.clock}
 }
 
+func (f *fakeSource) hook(fn func()) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.onStatAtts = fn
+}
+
+func (f *fakeSource) setFail(p string, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failRead == nil {
+		f.failRead = map[string]error{}
+	}
+	if err == nil {
+		delete(f.failRead, p)
+		return
+	}
+	f.failRead[p] = err
+}
+
 func (f *fakeSource) del(p string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -68,6 +92,13 @@ func (f *fakeSource) StatNotes() ([]index.FileStat, error) {
 
 func (f *fakeSource) StatAttachments() ([]index.FileStat, error) {
 	f.mu.Lock()
+	hook := f.onStatAtts
+	f.onStatAtts = nil
+	f.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := make([]index.FileStat, 0, len(f.atts))
 	for _, s := range f.atts {
@@ -80,6 +111,9 @@ func (f *fakeSource) ReadNote(p string) (string, error) {
 	f.reads.Add(1)
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if err := f.failRead[p]; err != nil {
+		return "", err
+	}
 	n, ok := f.notes[p]
 	if !ok {
 		return "", fmt.Errorf("read %s: %w", p, fs.ErrNotExist)
@@ -409,4 +443,158 @@ func TestConcurrentQueries(t *testing.T) {
 	readers.Wait()
 	close(stop)
 	wg.Wait()
+}
+
+func TestUpdateDuringStatWalkSurvives(t *testing.T) {
+	src := newFake(map[string]string{"A.md": "[[B]]"})
+	ix := build(t, src)
+	src.hook(func() {
+		src.set("B.md", "hello")
+		if err := ix.Update("B.md"); err != nil {
+			t.Errorf("Update: %v", err)
+		}
+	})
+	if err := ix.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := ix.Canonical("B.md"); !ok {
+		t.Fatal("stale Refresh dropped B.md that Update had just added")
+	}
+	out, _ := ix.Outgoing("A.md")
+	if len(out) != 1 || out[0].ToKind != index.NodeNote || out[0].To != "B.md" {
+		t.Fatalf("Outgoing = %+v", out)
+	}
+}
+
+func TestRemoveDuringStatWalkStaysRemoved(t *testing.T) {
+	src := newFake(map[string]string{"A.md": "[[B]]", "B.md": ""})
+	ix := build(t, src)
+	src.set("B.md", "changed") // the walk sees B changed and would re-read it
+	src.hook(func() {
+		src.del("B.md")
+		ix.Remove("B.md")
+	})
+	if err := ix.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := ix.Canonical("B.md"); ok {
+		t.Fatal("stale Refresh resurrected B.md after Remove")
+	}
+}
+
+func TestConcurrentRefreshStaleWalkKeepsNote(t *testing.T) {
+	src := newFake(map[string]string{"A.md": "[[B]]"})
+	ix := build(t, src)
+	// While refresh 1 is between its stat walk (no B) and its diff, B appears
+	// and refresh 2 runs. Refresh 1 must not drop B afterwards.
+	src.hook(func() {
+		src.set("B.md", "")
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			if err := ix.Refresh(); err != nil {
+				t.Errorf("Refresh 2: %v", err)
+			}
+		}()
+		select {
+		case <-done:
+		case <-time.After(200 * time.Millisecond): // refreshes are serialized
+		}
+	})
+	if err := ix.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+	// Let refresh 2 finish if it was waiting, then look at the state without
+	// triggering another refresh.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, ok := ix.Canonical("B.md"); ok {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("B.md not indexed after concurrent refreshes")
+}
+
+func TestUnreadableNote(t *testing.T) {
+	src := newFake(map[string]string{"A.md": "[[X]]", "B.md": "[[A]]", "X.md": "[[B]]"})
+	src.setFail("X.md", errors.New("permission denied"))
+	ix, err := index.Build(src)
+	if err != nil || ix == nil {
+		t.Fatalf("Build = %v, %v; want index and nil error", ix, err)
+	}
+	back, err := ix.Backlinks("A.md")
+	if err != nil || !contains(froms(back), "B.md") {
+		t.Fatalf("Backlinks(A) = %+v, %v", back, err)
+	}
+	// X stays a valid link target with no edges of its own.
+	back, err = ix.Backlinks("X.md")
+	if err != nil || !contains(froms(back), "A.md") {
+		t.Fatalf("Backlinks(X) = %+v, %v", back, err)
+	}
+	out, err := ix.Outgoing("X.md")
+	if err != nil || len(out) != 0 {
+		t.Fatalf("Outgoing(X) = %+v, %v", out, err)
+	}
+
+	src.reads.Store(0)
+	if err := ix.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+	if n := src.reads.Load(); n != 0 {
+		t.Fatalf("reads = %d, want 0 (unreadable note not retried)", n)
+	}
+
+	src.setFail("X.md", nil)
+	src.set("X.md", "[[B]] again")
+	if err := ix.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+	if n := src.reads.Load(); n != 1 {
+		t.Fatalf("reads = %d, want 1 after stat change", n)
+	}
+	back, _ = ix.Backlinks("B.md")
+	if !contains(froms(back), "X.md") {
+		t.Fatalf("Backlinks(B) = %+v, want X.md after re-read", back)
+	}
+}
+
+func TestUpdateUnreadableKeepsNote(t *testing.T) {
+	src := newFake(map[string]string{"A.md": "[[X]]", "X.md": "[[A]]"})
+	ix := build(t, src)
+	src.setFail("X.md", errors.New("permission denied"))
+	if err := ix.Update("X.md"); err == nil {
+		t.Fatal("Update: want the read error")
+	}
+	if _, ok := ix.Canonical("X.md"); !ok {
+		t.Fatal("unreadable note removed by Update")
+	}
+	out, _ := ix.Outgoing("X.md")
+	if len(out) != 0 {
+		t.Fatalf("Outgoing(X) = %+v, want none", out)
+	}
+	back, _ := ix.Backlinks("X.md")
+	if !contains(froms(back), "A.md") {
+		t.Fatalf("Backlinks(X) = %+v, want A.md", back)
+	}
+}
+
+func TestEmptyResultsAreNonNil(t *testing.T) {
+	ix := build(t, newFake(map[string]string{"A.md": "[[B]]", "B.md": "plain"}))
+	if _, edges := ix.Graph(); edges == nil {
+		t.Error("Graph edges nil")
+	}
+	empty := build(t, newFake(map[string]string{"A.md": ""}))
+	if _, edges := empty.Graph(); edges == nil {
+		t.Error("Graph edges nil on vault without links")
+	}
+	if out, _ := ix.Outgoing("B.md"); out == nil {
+		t.Error("Outgoing nil")
+	}
+	if back, _ := ix.Backlinks("A.md"); back == nil {
+		t.Error("Backlinks nil")
+	}
+	if o := ix.Orphans(); o == nil {
+		t.Error("Orphans nil")
+	}
 }
