@@ -93,7 +93,7 @@ Every note has a `version`: `sha256:` plus 16 hex characters of the hash of its 
 
 `get_note` returns `{"path":"n.md","version":"sha256:...","content":"..."}`. `get_note_metadata` returns its usual object plus `version`, with `path` canonical. `get_frontmatter` still returns the bare frontmatter map.
 
-Error messages that changed: a write to a path that is not a `.md` note now says `note not found`, and `get_linked_mentions` with an unknown name now says `note not found` too.
+Error messages that changed: `append_to_note`, `patch_note`, `update_frontmatter` and `delete_note` on a path that is not a `.md` note now say `note not found`. `create_note` still refuses another extension with `only .md notes are supported (got ".png" extension)`. `get_linked_mentions` with an unknown name now says `note not found` too. `get_canvas` reads `.canvas` files only and refuses anything else with `not a canvas file`.
 
 ### Read Tools (5)
 
@@ -215,8 +215,11 @@ obsidian-mcp/
     ├── vault/           # Vault operations
     │   ├── detection.go # Vault auto-detection
     │   ├── security.go  # Path validation
+    │   ├── address.go   # Notes addressed by path or name, suggestions
+    │   ├── version.go   # Version tokens and guarded edits
+    │   ├── guard.go     # Cross-process write lock (guard_unix.go, guard_windows.go, guard_other.go)
     │   ├── io.go        # File I/O and the vault walk
-    │   ├── atomic.go    # Atomic and no-clobber writes
+    │   ├── atomic.go    # Atomic and no-clobber writes (atomic_windows.go, atomic_other.go)
     │   ├── graph.go     # Graph queries backed by the link index
     │   └── tags.go      # Tag management
     ├── links/           # Link extraction and resolution (no I/O)
@@ -241,7 +244,7 @@ obsidian-mcp/
 
 Several obsidian-mcp processes can serve the same vault at once, for example one per agent or per project.
 
-- **One writer at a time per vault.** Every write takes the vault's write lock first: an in-process lock plus an OS advisory lock (`flock` on Unix, `LockFileEx` on Windows) on `.obsidian-mcp/write.lock`. `rename_tag` takes it once per note it changes.
+- **One writer at a time per vault.** Every write takes the vault's write lock first: an in-process lock plus an OS advisory lock (`flock` on Unix, `LockFileEx` on Windows) on `.obsidian-mcp/write.lock`. `rename_tag` takes it once per note it changes; if the lock stays busy, it stops waiting after the first timeout and reports the remaining notes that have the tag as failed.
 - **Fresh reads under the lock.** While holding the lock, a write reads the note from disk, applies its change and writes the result atomically (temporary file, then rename). It never writes back a copy read earlier, so two processes appending to the same note keep both lines.
 - **Versions guard destructive edits.** `patch_note` and `delete_note` need the `expected_version` from `get_note`. If another process changed the note in between, the call is refused with the current version; read the note again and retry. Additive writes (`create_note`, `append_to_note`, `update_frontmatter`) need no version and apply only their own change.
 - **Exclusive create.** When two processes create the same path, one succeeds and the other gets `already exists`.
@@ -258,10 +261,12 @@ Limits:
 ## Security
 
 - **Vault confinement**: paths that escape the vault, including via symlinks, are rejected.
-- **Protected directories**: `.git/`, `.obsidian/` and `.obsidian-mcp/` are blocked at any depth: no tool lists, reads or writes them.
-- **Lock directory**: the server creates `.obsidian-mcp/write.lock` in the vault on the first write (see [Concurrency](#concurrency)). It is created through the vault root, so a symlink or junction at `.obsidian-mcp` cannot redirect it outside the vault; if `.obsidian-mcp` is not a real directory, or `write.lock` is not a regular file, writes are refused. The lock file is never listed as a note. Add `.obsidian-mcp/` to `.gitignore` if the vault is a git repository.
+- **Protected directories**: `.git/`, `.obsidian/` and `.obsidian-mcp/` are blocked at any depth: no tool lists, reads or writes them. Spellings Windows treats as the same folder are blocked too: a name with trailing dots or spaces (`.git.`) on every OS, and on Windows any path segment that contains `:`, ends in a dot or space, or looks like an 8.3 short name (`OBSIDI~1`).
+- **Lock directory**: the server creates `.obsidian-mcp/write.lock` in the vault on the first write (see [Concurrency](#concurrency)). It is created through the vault root, so a symlink or junction at `.obsidian-mcp` cannot redirect it outside the vault; if `.obsidian-mcp` is not a real directory, or `write.lock` is not a regular file (a symlink included), writes are refused. The folder is created with mode `0700` and the lock file with `0600`, so other users on the machine cannot open the lock and block writes; a folder created by an earlier version keeps its mode. The lock file is never listed as a note. Add `.obsidian-mcp/` to `.gitignore` if the vault is a git repository.
 - **Lock behavior**: the lock is advisory and serializes obsidian-mcp writers only; a write waits at most 5 seconds for it. It does not protect against other programs, and it is not reliable on NFS or SMB shares.
 - **Markdown-only writes**: `create_note`, `append_to_note`, `patch_note`, `update_frontmatter` and `delete_note` only operate on `.md` files.
+- **Symlinked notes**: a note that is a symlink is written through to its target, which must be a `.md` file inside the vault. `delete_note` on such a note deletes the target file and leaves the link in place, now dangling.
+- **Canvas reads**: `get_canvas` reads `.canvas` files only (the symlink target too), and only regular files, so a FIFO cannot block it.
 - **Safe tag renames**: `rename_tag` also renames nested tags (`#a/b`), skips code blocks, and reports per-file failures.
 - **No code execution**: pure file system operations.
 

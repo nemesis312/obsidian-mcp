@@ -444,3 +444,21 @@ func TestCreateNoteResolvesUnderGuard(t *testing.T) {
 		t.Errorf("note not created in the folder the link points to under the guard: %v", err)
 	}
 }
+
+// Documented behaviour (README, Security): delete_note on a symlinked note
+// deletes the target file and leaves the link, now dangling.
+func TestDeleteNoteThroughSymlinkDeletesTarget(t *testing.T) {
+	v := newTestVault(t)
+	put(t, v, "a.md", "A")
+	link := filepath.Join(v.Root(), "n.md")
+	mustSymlink(t, "a.md", link)
+	if _, err := v.DeleteNote("n.md", VersionOf([]byte("A"))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(v.Root(), "a.md")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("target a.md still exists: %v", err)
+	}
+	if fi, err := os.Lstat(link); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("link n.md was removed or replaced: %v", err)
+	}
+}
