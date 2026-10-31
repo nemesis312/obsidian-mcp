@@ -28,7 +28,9 @@ type FileStat struct {
 	ModTime time.Time
 }
 
-// Source is the vault the index reads from.
+// Source is the vault the index reads from. The index calls it while
+// holding its own locks (Refresh holds refreshMu), so implementations must
+// not call back into the Index.
 type Source interface {
 	StatNotes() ([]FileStat, error)       // all .md notes
 	StatAttachments() ([]FileStat, error) // all non-.md, non-.canvas files outside protected/hidden dirs
@@ -127,6 +129,12 @@ type readResult struct {
 // the stat walk fails. A note that cannot be read (other than not existing)
 // is indexed as an empty note with a zero stat, so every Refresh retries it
 // until a read succeeds.
+//
+// Concurrent calls coalesce: a call that queued behind a walk which started
+// after it returns without walking again. A path written by Update after a
+// walk's snapshot is left to that Update, so when Update races an external
+// edit of the same note the index may serve the content Update read, which
+// can predate that edit, until the next Refresh sees the new stat.
 func (ix *Index) Refresh() error {
 	ticket := ix.refreshReq.Add(1)
 	ix.refreshMu.Lock()

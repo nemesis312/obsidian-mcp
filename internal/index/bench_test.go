@@ -105,6 +105,10 @@ func TestOrphans5kLinkless(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Warm the stat walk so the timing measures Orphans, not a cold walk.
+	if err := ix.Refresh(); err != nil {
+		t.Fatal(err)
+	}
 	start := time.Now()
 	orphans := ix.Orphans()
 	elapsed := time.Since(start)

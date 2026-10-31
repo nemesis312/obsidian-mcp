@@ -79,14 +79,15 @@ func (e wantEdge) String() string {
 // names in a different Unicode form than the one that was written.
 func nfc(s string) string { return norm.NFC.String(s) }
 
-// The table is sorted by (from, toKind, to), the order Graph() returns.
+// The table is sorted by (from, toKind, to) in byte order, the order Graph()
+// returns; TestFixtureEdges asserts it.
 // It must agree with testdata/linkvault/README.md.
 var fixtureEdges = []wantEdge{
-	{"Code.md", "Home.md", index.NodeNote, links.KindWikilink, false},
 	{"CaseLinks.md", "Home.md", index.NodeNote, links.KindWikilink, false},
 	{"CaseLinks.md", "Upper/Shout.MD", index.NodeNote, links.KindWikilink, false},
 	{"CaseLinks.md", "deep/sub/Deep Note.md", index.NodeNote, links.KindWikilink, false},
 	{"CaseLinks.md", "ghost target", index.NodeGhost, links.KindWikilink, false},
+	{"Code.md", "Home.md", index.NodeNote, links.KindWikilink, false},
 	{"Dups.md", "a/Dup.md", index.NodeNote, links.KindWikilink, true},
 	{"Dups.md", "b/c/Dup.md", index.NodeNote, links.KindWikilink, false},
 	{"Embeds.md", "Home.md", index.NodeNote, links.KindEmbed, false},
@@ -134,6 +135,14 @@ func TestFixtureEdges(t *testing.T) {
 	}
 	if len(edges) != len(fixtureEdges) {
 		t.Errorf("edge count = %d, want %d", len(edges), len(fixtureEdges))
+	}
+	// Graph() returns edges sorted by (From, ToKind, To): same order as the table.
+	if len(missing) == 0 && len(extra) == 0 && !reflect.DeepEqual(got, want) {
+		for i := range got {
+			if got[i] != want[i] {
+				t.Errorf("edge %d = %v, want %v (table or Graph order is off)", i, got[i], want[i])
+			}
+		}
 	}
 }
 
