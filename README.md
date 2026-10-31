@@ -237,10 +237,30 @@ obsidian-mcp/
         └── tag_tools.go
 ```
 
+## Concurrency
+
+Several obsidian-mcp processes can serve the same vault at once, for example one per agent or per project.
+
+- **One writer at a time per vault.** Every write takes the vault's write lock first: an in-process lock plus an OS advisory lock (`flock` on Unix, `LockFileEx` on Windows) on `.obsidian-mcp/write.lock`. `rename_tag` takes it once per note it changes.
+- **Fresh reads under the lock.** While holding the lock, a write reads the note from disk, applies its change and writes the result atomically (temporary file, then rename). It never writes back a copy read earlier, so two processes appending to the same note keep both lines.
+- **Versions guard destructive edits.** `patch_note` and `delete_note` need the `expected_version` from `get_note`. If another process changed the note in between, the call is refused with the current version; read the note again and retry. Additive writes (`create_note`, `append_to_note`, `update_frontmatter`) need no version and apply only their own change.
+- **Exclusive create.** When two processes create the same path, one succeeds and the other gets `already exists`.
+- **Bounded wait.** A write waits up to 5 seconds for the lock, then fails with `vault is busy: another obsidian-mcp process is writing; retry`.
+- **No stale locks.** The OS releases the lock when the process that holds it exits or crashes, so there is nothing to clean up. The lock file itself is never deleted.
+- **Readers never lock.** Because writes are atomic renames, a read sees either the old or the new note, never a partial one.
+
+Limits:
+
+- Other programs (the Obsidian app, sync clients, editors) do not take this lock. A version token still catches their changes before a `patch_note` or `delete_note`, but a write from such a program at the same instant as an obsidian-mcp write can overwrite it.
+- Advisory locks are not reliable on network filesystems (NFS, SMB). Keep a vault that several processes write to on a local disk.
+- On platforms without an OS file lock (aix, solaris), writes are refused rather than left unguarded.
+
 ## Security
 
 - **Vault confinement**: paths that escape the vault, including via symlinks, are rejected.
-- **Protected directories**: `.git/` and `.obsidian/` are blocked.
+- **Protected directories**: `.git/`, `.obsidian/` and `.obsidian-mcp/` are blocked at any depth: no tool lists, reads or writes them.
+- **Lock directory**: the server creates `.obsidian-mcp/write.lock` in the vault on the first write (see [Concurrency](#concurrency)). It is created through the vault root, so a symlink or junction at `.obsidian-mcp` cannot redirect it outside the vault; if `.obsidian-mcp` is not a real directory, or `write.lock` is not a regular file, writes are refused. The lock file is never listed as a note. Add `.obsidian-mcp/` to `.gitignore` if the vault is a git repository.
+- **Lock behavior**: the lock is advisory and serializes obsidian-mcp writers only; a write waits at most 5 seconds for it. It does not protect against other programs, and it is not reliable on NFS or SMB shares.
 - **Markdown-only writes**: `create_note`, `append_to_note`, `patch_note`, `update_frontmatter` and `delete_note` only operate on `.md` files.
 - **Safe tag renames**: `rename_tag` also renames nested tags (`#a/b`), skips code blocks, and reports per-file failures.
 - **No code execution**: pure file system operations.
