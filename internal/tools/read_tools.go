@@ -167,11 +167,20 @@ func registerGetNoteMetadata(s *server.MCPServer, v *vault.Vault) {
 			return mcp.NewToolResultError(fmt.Sprintf("failed to get metadata: %v", err)), nil
 		}
 
-		// Get outgoing links
-		outgoing, _ := v.GetOutgoingLinks(path)
-
-		// Get backlinks
-		backlinks, _ := v.GetBacklinks(path)
+		// Outgoing link targets and backlinking notes, as paths (ghost
+		// targets as their lookup key). Errors leave the lists empty.
+		outgoing := []string{}
+		if edges, err := v.GetOutgoingLinks(path); err == nil {
+			for _, e := range edges {
+				outgoing = append(outgoing, e.To)
+			}
+		}
+		backlinks := []string{}
+		if edges, err := v.GetBacklinks(path); err == nil {
+			for _, e := range edges {
+				backlinks = append(backlinks, e.From)
+			}
+		}
 
 		metadata := map[string]interface{}{
 			"path":        path,
