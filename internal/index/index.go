@@ -482,14 +482,27 @@ type edgeKey struct {
 	to   string
 }
 
-// memoKey is what a resolution depends on besides the resolver: the source
-// note's folder, the target as written and whether it is a markdown link
-// (wikilinks and embeds resolve alike). The raw target is a finer key than
-// links.Key(target), so a memo hit is always exact.
-type memoKey struct {
-	dir      string
-	target   string
+// target is what a ref's resolution depends on besides the source folder:
+// the target as links.NormalizeTarget keys it, whether it is rooted (only
+// markdown links honor that) and whether it is a markdown link (wikilinks
+// and embeds resolve alike). Spellings Resolve treats alike share a target.
+type target struct {
+	key      string
+	rooted   bool
 	markdown bool
+}
+
+func targetOf(r links.Ref) target {
+	key, rooted := links.NormalizeTarget(r.Target)
+	md := r.Kind == links.KindMarkdown
+	return target{key: key, rooted: rooted && md, markdown: md}
+}
+
+// memoKey is what a resolution depends on: the source note's folder and the
+// normalized target, so a memo hit is always exact.
+type memoKey struct {
+	dir string
+	t   target
 }
 
 type memoVal struct {
@@ -504,7 +517,7 @@ type resolveMemo map[memoKey]memoVal
 
 func (ix *Index) resolveRef(from string, ref links.Ref, memo resolveMemo) memoVal {
 	// An empty target is the source note itself: not shared across notes.
-	k := memoKey{path.Dir(from), ref.Target, ref.Kind == links.KindMarkdown}
+	k := memoKey{path.Dir(from), targetOf(ref)}
 	if ref.Target != "" {
 		if v, ok := memo[k]; ok {
 			return v
@@ -532,6 +545,9 @@ func (ix *Index) resolve(e *entry, memo resolveMemo) []Edge {
 	seen := map[edgeKey]bool{}
 	for _, ref := range e.refs {
 		v := ix.resolveRef(e.Path, ref, memo)
+		if v.toKind == NodeGhost && v.to == "" {
+			continue // "[[/]]", "[[./]]": names no file
+		}
 		edge := Edge{From: e.Path, To: v.to, ToKind: v.toKind, Kind: ref.Kind, Ambiguous: v.ambiguous, Raw: ref.Raw}
 		k := edgeKey{edge.ToKind, edge.To}
 		if seen[k] {
@@ -543,21 +559,25 @@ func (ix *Index) resolve(e *entry, memo resolveMemo) []Edge {
 	return out
 }
 
-// refKey identifies refs that always resolve alike from the same note.
+// refKey identifies refs that always resolve alike from the same note. An
+// empty Target (the note itself) and "./" share a normalized target but not
+// a resolution, so self tells them apart.
 type refKey struct {
-	kind   links.Kind
-	target string // links.Key(Target)
+	kind links.Kind
+	t    target
+	self bool
 }
 
 // parse extracts a note's refs, keeping only the first ref per (Kind,
-// Key(Target)): repeats resolve to the same edge, and dropping them bounds
-// memory and resolve work by distinct targets, not by link count.
+// normalized target): repeats and equivalent spellings resolve to the same
+// edge, and dropping them bounds memory and resolve work by distinct
+// targets, not by link count.
 func parse(path, content string) *entry {
 	all := links.Extract(content)
 	refs := make([]links.Ref, 0, len(all))
 	seen := make(map[refKey]bool, len(all))
 	for _, r := range all {
-		k := refKey{r.Kind, links.Key(r.Target)}
+		k := refKey{r.Kind, targetOf(r), r.Target == ""}
 		if seen[k] {
 			continue
 		}

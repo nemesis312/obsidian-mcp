@@ -665,3 +665,115 @@ func TestManyDuplicateBasenamesAndRefs(t *testing.T) {
 		t.Errorf("Update adding a path took %v, want under 2s", d)
 	}
 }
+
+// equivalentSpellings returns n distinct spellings of the wikilink target
+// "index" that Resolve treats alike, built from "./" and "./ " prefixes. Each
+// differs from the others after links.Key, so only the normalization Resolve
+// applies can tell they are the same.
+func equivalentSpellings(n int) []string {
+	out := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		var sb strings.Builder
+		for b := 0; i>>b > 0; b++ {
+			sb.WriteString("./")
+			if i&(1<<b) != 0 {
+				sb.WriteString(" ")
+			}
+		}
+		sb.WriteString("index")
+		out = append(out, sb.String())
+	}
+	return out
+}
+
+// Equivalent spellings of one target (S1 bypass): a note holding 20k
+// distinct spellings of a basename shared by 1000 notes must not cost
+// spellings x candidates, and every spelling resolves to the same edge.
+func TestEquivalentSpellingsBounded(t *testing.T) {
+	const k, n = 1000, 20_000
+	variants := equivalentSpellings(n)
+	seen := map[string]bool{}
+	var sb strings.Builder
+	for _, v := range variants {
+		if seen[v] {
+			t.Fatalf("spelling %q repeats", v)
+		}
+		seen[v] = true
+		sb.WriteString("[[" + v + "]] ")
+	}
+	notes := map[string]string{"big.md": sb.String()}
+	for i := 0; i < k; i++ {
+		notes[fmt.Sprintf("d%d/index.md", i)] = ""
+	}
+
+	start := time.Now()
+	ix := build(t, newFake(notes))
+	if d := time.Since(start); d > time.Second {
+		t.Errorf("Build took %v, want under 1s", d)
+	}
+	out, err := ix.Outgoing("big.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 1 || !out[0].Ambiguous || out[0].To != "d0/index.md" || out[0].Raw != "[["+variants[0]+"]]" {
+		t.Fatalf("Outgoing(big.md) = %+v, want one ambiguous edge to d0/index.md", out)
+	}
+}
+
+// The resolve memo is keyed on the normalized target: 20k notes in one
+// folder, each with its own spelling of a basename shared by 1000 notes,
+// resolve it once.
+func TestEquivalentSpellingsAcrossNotesMemoized(t *testing.T) {
+	const k, n = 1000, 20_000
+	notes := map[string]string{}
+	for i, v := range equivalentSpellings(n) {
+		notes[fmt.Sprintf("n%05d.md", i)] = "[[" + v + "]]"
+	}
+	for i := 0; i < k; i++ {
+		notes[fmt.Sprintf("d%d/index.md", i)] = ""
+	}
+
+	start := time.Now()
+	ix := build(t, newFake(notes))
+	if d := time.Since(start); d > time.Second {
+		t.Errorf("Build took %v, want under 1s", d)
+	}
+	_, edges := ix.Graph()
+	got := 0
+	for _, e := range edges {
+		if !strings.HasPrefix(e.From, "n") {
+			continue
+		}
+		got++
+		if !e.Ambiguous || e.To != "d0/index.md" {
+			t.Fatalf("edge %+v, want an ambiguous edge to d0/index.md", e)
+		}
+	}
+	if got != n {
+		t.Fatalf("edges from the n notes = %d, want %d", got, n)
+	}
+}
+
+// A target that is only "/" or "./" names nothing: no edge, no ghost node
+// with an empty id.
+func TestRootOnlyTargetHasNoEdge(t *testing.T) {
+	ix := build(t, newFake(map[string]string{"A.md": "[[/]] [[./]] [r](/) [[B]]", "B.md": ""}))
+	out, err := ix.Outgoing("A.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 1 || out[0].To != "B.md" {
+		t.Fatalf("Outgoing = %+v, want only the edge to B.md", out)
+	}
+	nodes, edges := ix.Graph()
+	for _, n := range nodes {
+		if n.ID == "" {
+			t.Fatalf("graph node with empty id: %+v", nodes)
+		}
+	}
+	for _, e := range edges {
+		if e.To == "" {
+			t.Fatalf("graph edge with empty To: %+v", edges)
+		}
+	}
+}

@@ -93,27 +93,42 @@ func trimMD(s string) string {
 
 func escapes(p string) bool { return p == ".." || strings.HasPrefix(p, "../") }
 
-// trimTarget strips what Resolve ignores in front of a target: surrounding
-// spaces, "./" prefixes and leading "/" (rooted reports whether there was one).
-func trimTarget(target string) (t string, rooted bool) {
+// cleanTarget is the one place a target is normalized for matching: it
+// strips surrounding spaces, "./" prefixes and leading "/" (rooted reports
+// whether there was one) and path-cleans the rest. It returns "" when
+// nothing is left.
+func cleanTarget(target string) (t string, rooted bool) {
 	t = strings.TrimSpace(target)
 	for strings.HasPrefix(t, "./") {
 		t = strings.TrimSpace(t[2:])
 	}
 	rooted = strings.HasPrefix(t, "/")
-	return strings.TrimLeft(t, "/"), rooted
+	if t = strings.TrimLeft(t, "/"); t == "" {
+		return "", rooted
+	}
+	return path.Clean(t), rooted
 }
 
-// GhostKey returns the key an unresolved target is known by: the target
-// normalized as Resolve matches it (trimmed, "./" and leading "/" removed,
-// cleaned, ".md" removed) and then Key'd. "[[Ghost]]", "[[Ghost.md]]",
-// "[[./Ghost]]" and "[g](Ghost.md)" share one key.
+// NormalizeTarget returns the form of a non-empty target that Resolve
+// matches on: cleaned as Resolve cleans it and then Key'd. From the same
+// note, two refs resolve alike when their kinds are both markdown or both
+// not, their keys are equal and, for markdown links, so is rooted (the
+// other kinds ignore it). "[[./ ./Index]]" and "[[index]]" share a key;
+// ".md" is kept because "x.png" and "x.png.md" resolve differently. The key
+// is "" when nothing names a file ("/", "./"); an empty Target, which names
+// the source note, also yields "", so callers must check Target == "" first.
+func NormalizeTarget(target string) (key string, rooted bool) {
+	t, rooted := cleanTarget(target)
+	return Key(t), rooted
+}
+
+// GhostKey returns the key an unresolved target is known by: its
+// NormalizeTarget key without ".md". "[[Ghost]]", "[[Ghost.md]]",
+// "[[./Ghost]]" and "[g](Ghost.md)" share one key. It is "" when the target
+// names nothing ("/", "./").
 func GhostKey(target string) string {
-	t, _ := trimTarget(target)
-	if t == "" {
-		return ""
-	}
-	return Key(trimMD(path.Clean(t)))
+	k, _ := NormalizeTarget(target)
+	return trimMD(k)
 }
 
 // Lookup finds a path by exact, case/NFC-insensitive match with ".md" optional.
@@ -135,13 +150,13 @@ func (r *Resolver) Resolve(fromNote string, ref Ref) Resolution {
 	if ref.Target == "" {
 		return Resolution{Status: Resolved, Path: fromNote}
 	}
-	t, rooted := trimTarget(ref.Target)
+	t, rooted := cleanTarget(ref.Target)
 	if t == "" {
 		return Resolution{Status: Unresolved}
 	}
 
 	if ref.Kind == KindMarkdown && !rooted {
-		rel := path.Clean(path.Join(path.Dir(fromNote), t))
+		rel := path.Join(path.Dir(fromNote), t)
 		if escapes(rel) {
 			return Resolution{Status: Unresolved}
 		}
@@ -155,7 +170,6 @@ func (r *Resolver) Resolve(fromNote string, ref Ref) Resolution {
 		}
 	}
 
-	t = path.Clean(t)
 	if t == "." || escapes(t) {
 		return Resolution{Status: Unresolved}
 	}
