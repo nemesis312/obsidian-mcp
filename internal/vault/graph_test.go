@@ -337,3 +337,42 @@ func TestUppercaseMDIsANote(t *testing.T) {
 		t.Fatalf("after write+refresh outgoing = %+v", out)
 	}
 }
+
+// ReadNote must not follow a symlink that appears after ValidatePath ran
+// (symlink-flip race): the open itself is confined to the vault.
+func TestReadNoteSymlinkFlipAfterValidate(t *testing.T) {
+	v := newTestVault(t)
+	writeRaw(t, v, "dir/n.md", "INSIDE")
+	writeRaw(t, v, "plain.md", "plain")
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "n.md"), []byte("SECRET"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustSymlink(t, filepath.Join(outside, "n.md"), filepath.Join(v.Root(), "esc.md"))
+
+	if got, err := v.ReadNote("plain.md"); err != nil || got != "plain" {
+		t.Fatalf("ReadNote(plain.md) = %q, %v", got, err)
+	}
+	if _, err := v.ReadNote("esc.md"); err == nil {
+		t.Fatal("ReadNote(esc.md): an escaping symlink must be rejected")
+	}
+
+	dir := filepath.Join(v.Root(), "dir")
+	readNoteHook = func() {
+		if err := os.Rename(dir, dir+"-old"); err != nil {
+			t.Error(err)
+			return
+		}
+		if err := os.Symlink(outside, dir); err != nil {
+			t.Error(err)
+		}
+	}
+	t.Cleanup(func() { readNoteHook = nil })
+	got, err := v.ReadNote("dir/n.md")
+	if err == nil || strings.Contains(got, "SECRET") {
+		t.Fatalf("ReadNote after flip = %q, %v; want an error and no outside content", got, err)
+	}
+	if strings.Contains(err.Error(), v.Root()) {
+		t.Errorf("error leaks root: %q", err)
+	}
+}

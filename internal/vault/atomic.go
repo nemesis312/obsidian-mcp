@@ -2,13 +2,15 @@ package vault
 
 import (
 	"errors"
-	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 )
 
 const defaultNoteMode fs.FileMode = 0o644
+
+// errNoteExists is returned by createExclusive when target already exists.
+var errNoteExists = errors.New("note already exists")
 
 // writeTemp writes data to a hidden temp file next to target and returns its
 // path. The caller owns cleanup on success of the following step.
@@ -43,7 +45,7 @@ func writeFileAtomic(target string, data []byte) error {
 	mode := defaultNoteMode
 	if info, err := os.Stat(target); err == nil {
 		if info.IsDir() {
-			return fmt.Errorf("%s is a directory", target)
+			return &fs.PathError{Op: "write", Path: target, Err: errors.New("is a directory")}
 		}
 		mode = info.Mode().Perm()
 	}
@@ -62,7 +64,7 @@ func writeFileAtomic(target string, data []byte) error {
 func createExclusive(target string, data []byte) error {
 	tmp, err := writeTemp(target, data, defaultNoteMode)
 	if err != nil {
-		return fmt.Errorf("failed to create note: %w", err)
+		return err
 	}
 	defer os.Remove(tmp)
 
@@ -71,25 +73,25 @@ func createExclusive(target string, data []byte) error {
 	case err == nil:
 		return nil
 	case errors.Is(err, fs.ErrExist):
-		return fmt.Errorf("note already exists")
+		return errNoteExists
 	}
 
 	// Hard links unavailable (e.g. some network/FAT filesystems): O_EXCL fallback.
 	f, oerr := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, defaultNoteMode)
 	if oerr != nil {
 		if errors.Is(oerr, fs.ErrExist) {
-			return fmt.Errorf("note already exists")
+			return errNoteExists
 		}
-		return fmt.Errorf("failed to create note: %w", oerr)
+		return oerr
 	}
 	if _, werr := f.Write(data); werr != nil {
 		f.Close()
 		os.Remove(target)
-		return fmt.Errorf("failed to create note: %w", werr)
+		return werr
 	}
 	if cerr := f.Close(); cerr != nil {
 		os.Remove(target)
-		return fmt.Errorf("failed to create note: %w", cerr)
+		return cerr
 	}
 	return nil
 }
