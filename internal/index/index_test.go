@@ -1,0 +1,412 @@
+package index_test
+
+import (
+	"errors"
+	"fmt"
+	"io/fs"
+	"sort"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/nemesis312/obsidian-mcp/internal/index"
+)
+
+// fakeSource is an in-memory vault. It is safe for concurrent use.
+type fakeSource struct {
+	mu    sync.Mutex
+	notes map[string]fakeFile
+	atts  map[string]index.FileStat
+	reads atomic.Int64
+	clock time.Time
+}
+
+type fakeFile struct {
+	content string
+	mod     time.Time
+}
+
+func newFake(notes map[string]string, atts ...string) *fakeSource {
+	f := &fakeSource{
+		notes: map[string]fakeFile{},
+		atts:  map[string]index.FileStat{},
+		clock: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+	}
+	for p, c := range notes {
+		f.notes[p] = fakeFile{content: c, mod: f.clock}
+	}
+	for _, a := range atts {
+		f.atts[a] = index.FileStat{Path: a, Size: 1, ModTime: f.clock}
+	}
+	return f
+}
+
+// set writes a note and advances its ModTime.
+func (f *fakeSource) set(p, content string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.clock = f.clock.Add(time.Second)
+	f.notes[p] = fakeFile{content: content, mod: f.clock}
+}
+
+func (f *fakeSource) del(p string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.notes, p)
+}
+
+func (f *fakeSource) StatNotes() ([]index.FileStat, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]index.FileStat, 0, len(f.notes))
+	for p, n := range f.notes {
+		out = append(out, index.FileStat{Path: p, Size: int64(len(n.content)), ModTime: n.mod})
+	}
+	return out, nil
+}
+
+func (f *fakeSource) StatAttachments() ([]index.FileStat, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]index.FileStat, 0, len(f.atts))
+	for _, s := range f.atts {
+		out = append(out, s)
+	}
+	return out, nil
+}
+
+func (f *fakeSource) ReadNote(p string) (string, error) {
+	f.reads.Add(1)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n, ok := f.notes[p]
+	if !ok {
+		return "", fmt.Errorf("read %s: %w", p, fs.ErrNotExist)
+	}
+	return n.content, nil
+}
+
+func build(t *testing.T, src index.Source) *index.Index {
+	t.Helper()
+	ix, err := index.Build(src)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	return ix
+}
+
+func froms(edges []index.Edge) []string {
+	out := make([]string, 0, len(edges))
+	for _, e := range edges {
+		out = append(out, e.From)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func contains(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
+func TestBuildResolvesEdges(t *testing.T) {
+	ix := build(t, newFake(map[string]string{"A.md": "see [[B]]", "sub/B.md": "body"}))
+
+	out, err := ix.Outgoing("A.md")
+	if err != nil {
+		t.Fatalf("Outgoing: %v", err)
+	}
+	if len(out) != 1 || out[0].To != "sub/B.md" || out[0].ToKind != index.NodeNote || out[0].From != "A.md" || out[0].Raw != "[[B]]" {
+		t.Fatalf("Outgoing = %+v", out)
+	}
+	back, err := ix.Backlinks("sub/B.md")
+	if err != nil {
+		t.Fatalf("Backlinks: %v", err)
+	}
+	if !contains(froms(back), "A.md") {
+		t.Fatalf("Backlinks = %+v, want A.md", back)
+	}
+}
+
+func TestOutgoingUnknownNote(t *testing.T) {
+	ix := build(t, newFake(map[string]string{"A.md": ""}))
+	if _, err := ix.Outgoing("Nope.md"); err == nil {
+		t.Fatal("Outgoing of unknown note: want error")
+	}
+	if _, err := ix.Backlinks("Nope.md"); err == nil {
+		t.Fatal("Backlinks of unknown note: want error")
+	}
+}
+
+func TestGhostEdge(t *testing.T) {
+	ix := build(t, newFake(map[string]string{"A.md": "[[Missing]]"}))
+	out, err := ix.Outgoing("A.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 1 || out[0].ToKind != index.NodeGhost || out[0].To != "missing" {
+		t.Fatalf("Outgoing = %+v", out)
+	}
+	if contains(ix.Orphans(), "A.md") {
+		t.Fatal("A.md has an Out edge; must not be an orphan")
+	}
+}
+
+func TestDedupeByResolvedTarget(t *testing.T) {
+	ix := build(t, newFake(map[string]string{"A.md": "[[sub/B]] [[sub/B.md]] [[B]]", "sub/B.md": ""}))
+	out, err := ix.Outgoing("A.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 1 || out[0].Raw != "[[sub/B]]" {
+		t.Fatalf("Outgoing = %+v, want one edge keeping first Raw", out)
+	}
+}
+
+func TestAmbiguousEdge(t *testing.T) {
+	ix := build(t, newFake(map[string]string{"A.md": "[[Dup]]", "x/Dup.md": "", "y/Dup.md": ""}))
+	out, err := ix.Outgoing("A.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 1 || !out[0].Ambiguous || out[0].To != "x/Dup.md" {
+		t.Fatalf("Outgoing = %+v", out)
+	}
+}
+
+func TestSelfLinkNotBacklink(t *testing.T) {
+	ix := build(t, newFake(map[string]string{"A.md": "[[A]]"}))
+	back, err := ix.Backlinks("A.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(back) != 0 {
+		t.Fatalf("Backlinks = %+v, want none", back)
+	}
+	if contains(ix.Orphans(), "A.md") {
+		t.Fatal("A.md has an Out edge; must not be an orphan")
+	}
+}
+
+func TestOrphansIncomingAndAttachments(t *testing.T) {
+	ix := build(t, newFake(map[string]string{
+		"A.md": "[[B]]", "B.md": "", "C.md": "", "D.md": "![[img.png]]",
+	}, "img.png"))
+	got := ix.Orphans()
+	if len(got) != 1 || got[0] != "C.md" {
+		t.Fatalf("Orphans = %v, want [C.md]", got)
+	}
+}
+
+func TestOrphansNoReads(t *testing.T) {
+	notes := map[string]string{}
+	for i := 0; i < 2000; i++ {
+		notes[fmt.Sprintf("n%04d.md", i)] = "plain text"
+	}
+	src := newFake(notes)
+	ix := build(t, src)
+	src.reads.Store(0)
+	got := ix.Orphans()
+	if len(got) != 2000 {
+		t.Fatalf("Orphans = %d, want 2000", len(got))
+	}
+	if !sort.StringsAreSorted(got) {
+		t.Fatal("Orphans not sorted")
+	}
+	if n := src.reads.Load(); n != 0 {
+		t.Fatalf("reads = %d, want 0", n)
+	}
+}
+
+func TestRefreshPicksUpExternalEdit(t *testing.T) {
+	src := newFake(map[string]string{"A.md": "nothing", "B.md": ""})
+	ix := build(t, src)
+	src.set("A.md", "now [[B]]")
+	back, err := ix.Backlinks("B.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !contains(froms(back), "A.md") {
+		t.Fatalf("Backlinks = %+v, want A.md", back)
+	}
+}
+
+func TestRefreshNoChangeNoReads(t *testing.T) {
+	src := newFake(map[string]string{"A.md": "[[B]]", "B.md": ""})
+	ix := build(t, src)
+	if err := ix.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+	src.reads.Store(0)
+	if err := ix.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+	if n := src.reads.Load(); n != 0 {
+		t.Fatalf("reads = %d, want 0", n)
+	}
+}
+
+func TestRefreshNewNoteResolvesGhost(t *testing.T) {
+	src := newFake(map[string]string{"A.md": "[[New]]"})
+	ix := build(t, src)
+	out, _ := ix.Outgoing("A.md")
+	if len(out) != 1 || out[0].ToKind != index.NodeGhost {
+		t.Fatalf("before: %+v", out)
+	}
+	src.set("New.md", "")
+	src.reads.Store(0)
+	if err := ix.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+	if n := src.reads.Load(); n != 1 {
+		t.Fatalf("reads = %d, want 1 (only the new note)", n)
+	}
+	out, _ = ix.Outgoing("A.md")
+	if len(out) != 1 || out[0].ToKind != index.NodeNote || out[0].To != "New.md" {
+		t.Fatalf("after: %+v", out)
+	}
+}
+
+func TestDeleteRemovesEdges(t *testing.T) {
+	src := newFake(map[string]string{"A.md": "[[B]]", "sub/B.md": ""})
+	ix := build(t, src)
+	src.del("sub/B.md")
+	out, err := ix.Outgoing("A.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 1 || out[0].ToKind != index.NodeGhost || out[0].To != "b" {
+		t.Fatalf("Outgoing = %+v", out)
+	}
+	if _, err := ix.Backlinks("sub/B.md"); err == nil {
+		t.Fatal("Backlinks of deleted note: want error")
+	}
+}
+
+func TestUpdate(t *testing.T) {
+	src := newFake(map[string]string{"A.md": "", "B.md": "[[C]]"})
+	ix := build(t, src)
+
+	// New note: path set changes, B's ghost resolves.
+	src.set("C.md", "[[A]]")
+	if err := ix.Update("C.md"); err != nil {
+		t.Fatal(err)
+	}
+	out, _ := ix.Outgoing("B.md")
+	if len(out) != 1 || out[0].ToKind != index.NodeNote || out[0].To != "C.md" {
+		t.Fatalf("B out = %+v", out)
+	}
+
+	// Read failure removes the note and returns the error.
+	src.del("C.md")
+	if err := ix.Update("C.md"); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("Update err = %v, want ErrNotExist", err)
+	}
+	if _, ok := ix.Canonical("C.md"); ok {
+		t.Fatal("C.md still indexed after failed Update")
+	}
+}
+
+func TestRemove(t *testing.T) {
+	src := newFake(map[string]string{"A.md": "[[B]]", "B.md": ""})
+	ix := build(t, src)
+	src.del("B.md")
+	ix.Remove("B.md")
+	out, _ := ix.Outgoing("A.md")
+	if len(out) != 1 || out[0].ToKind != index.NodeGhost {
+		t.Fatalf("Outgoing = %+v", out)
+	}
+}
+
+func TestCanonical(t *testing.T) {
+	ix := build(t, newFake(map[string]string{"sub/Note.md": ""}, "img.png"))
+	for _, in := range []string{"sub/Note.md", "SUB/note", `sub\Note.md`} {
+		if got, ok := ix.Canonical(in); !ok || got != "sub/Note.md" {
+			t.Errorf("Canonical(%q) = %q, %v", in, got, ok)
+		}
+	}
+	if _, ok := ix.Canonical("img.png"); ok {
+		t.Error("Canonical must not return attachments")
+	}
+}
+
+func TestGraph(t *testing.T) {
+	ix := build(t, newFake(map[string]string{
+		"A.md": "[[B]] [[Ghost]] ![[img.png]]", "B.md": "",
+	}, "img.png", "unused.png"))
+	nodes, edges := ix.Graph()
+	wantNodes := []index.GraphNode{
+		{ID: "A.md", Kind: index.NodeNote},
+		{ID: "B.md", Kind: index.NodeNote},
+		{ID: "img.png", Kind: index.NodeAttachment},
+		{ID: "ghost", Kind: index.NodeGhost},
+	}
+	if fmt.Sprint(nodes) != fmt.Sprint(wantNodes) {
+		t.Fatalf("nodes = %v, want %v", nodes, wantNodes)
+	}
+	if len(edges) != 3 {
+		t.Fatalf("edges = %+v", edges)
+	}
+	order := []index.NodeKind{index.NodeNote, index.NodeAttachment, index.NodeGhost}
+	for i, e := range edges {
+		if e.From != "A.md" || e.ToKind != order[i] {
+			t.Fatalf("edges not sorted by (From, ToKind, To): %+v", edges)
+		}
+	}
+}
+
+func TestQueriesReturnCopies(t *testing.T) {
+	ix := build(t, newFake(map[string]string{"A.md": "[[B]]", "B.md": ""}))
+	out, _ := ix.Outgoing("A.md")
+	out[0].To = "mutated"
+	again, _ := ix.Outgoing("A.md")
+	if again[0].To != "B.md" {
+		t.Fatal("Outgoing returned an internal slice")
+	}
+}
+
+func TestConcurrentQueries(t *testing.T) {
+	src := newFake(map[string]string{"A.md": "[[B]]", "B.md": "[[A]]", "C.md": ""})
+	ix := build(t, src)
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			src.set("C.md", fmt.Sprintf("[[A]] [[N%d]]", i%5))
+			if err := ix.Update("C.md"); err != nil {
+				t.Errorf("Update: %v", err)
+				return
+			}
+		}
+	}()
+	var readers sync.WaitGroup
+	for g := 0; g < 16; g++ {
+		readers.Add(1)
+		go func() {
+			defer readers.Done()
+			for i := 0; i < 50; i++ {
+				if _, err := ix.Backlinks("A.md"); err != nil {
+					t.Errorf("Backlinks: %v", err)
+					return
+				}
+				_ = ix.Orphans()
+				_, _ = ix.Graph()
+			}
+		}()
+	}
+	readers.Wait()
+	close(stop)
+	wg.Wait()
+}
