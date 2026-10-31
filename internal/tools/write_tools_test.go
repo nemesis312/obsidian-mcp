@@ -286,7 +286,7 @@ func TestCreateNoteWindowsNameForms(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("windows only")
 	}
-	for _, p := range []string{".obsidian-mcp./x.md", ".git./x.md", ".obsidian ./x.md", ".git::$INDEX_ALLOCATION/x.md", "OBSIDI~1/x.md"} {
+	for _, p := range []string{".obsidian-mcp./x.md", ".git./x.md", ".obsidian ./x.md", ".git::$INDEX_ALLOCATION/x.md", "OBSIDI~1/x.md", "GIT~1/x.md"} {
 		e := newEnv(t)
 		out, isErr := e.call("create_note", map[string]any{"path": p, "content": "x"})
 		if !isErr || !strings.Contains(out, "path_violation") {
@@ -299,5 +299,13 @@ func TestCreateNoteWindowsNameForms(t *testing.T) {
 		if len(entries) != 0 {
 			t.Errorf("create_note(%q) created %v", p, entries)
 		}
+	}
+	// A "~<digit>" name that is no protected folder's short name still works.
+	e := newEnv(t)
+	if out, isErr := e.call("create_note", map[string]any{"path": "draft~2.md", "content": "x"}); isErr {
+		t.Errorf("create_note(draft~2.md) = %q, want success", out)
+	}
+	if !e.exists("draft~2.md") {
+		t.Error("draft~2.md was not created")
 	}
 }

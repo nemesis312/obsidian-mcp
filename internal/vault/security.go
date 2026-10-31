@@ -87,7 +87,7 @@ var (
 	errOutside = errors.New("path_violation: path is outside the vault")
 	errInvalid = errors.New("path_violation: invalid path")
 	// errWindowsName rejects a segment Windows would read as another name.
-	errWindowsName = errors.New(`path_violation: name not allowed (a ':', a trailing '.' or space, or an 8.3 short name like "NAME~1")`)
+	errWindowsName = errors.New(`path_violation: name not allowed (a ':', a trailing '.' or space, or an 8.3 short name of a protected folder like "OBSIDI~1")`)
 )
 
 // checkWindowsNames enables hasWindowsUnsafeSegment in ValidatePath.
@@ -131,8 +131,9 @@ func hasProtectedSegment(rel string) bool {
 }
 
 // hasWindowsUnsafeSegment reports whether a segment of rel (other than ".")
-// contains ':', ends in '.' or space, or has the 8.3 short-name form, a '~'
-// followed by a digit. Windows reads each of these as another name.
+// contains ':', ends in '.' or space, or is the 8.3 short-name alias of a
+// protected folder (isProtectedShortName). Windows reads each of these as
+// another name.
 func hasWindowsUnsafeSegment(rel string) bool {
 	for _, seg := range strings.Split(rel, string(filepath.Separator)) {
 		if seg == "" || seg == "." {
@@ -141,13 +142,30 @@ func hasWindowsUnsafeSegment(rel string) bool {
 		if strings.ContainsRune(seg, ':') || strings.HasSuffix(seg, ".") || strings.HasSuffix(seg, " ") {
 			return true
 		}
-		for i := 0; i+1 < len(seg); i++ {
-			if seg[i] == '~' && seg[i+1] >= '0' && seg[i+1] <= '9' {
-				return true
-			}
+		if isProtectedShortName(seg) {
+			return true
 		}
 	}
 	return false
+}
+
+// isProtectedShortName reports whether seg can be the 8.3 short-name alias
+// of a protected folder: Windows drops the leading dot, so ".git" is
+// "GIT~1" and ".obsidian" or ".obsidian-mcp" is "OBSIDI~1". It matches,
+// ignoring case, ^\.*(GIT|OBSIDI)~[0-9]+$. Other names with "~<digit>",
+// such as "draft~2.md", are not aliases of a protected folder.
+func isProtectedShortName(seg string) bool {
+	seg = strings.TrimLeft(seg, ".")
+	stem, num, ok := strings.Cut(seg, "~")
+	if !ok || num == "" || !(strings.EqualFold(stem, "GIT") || strings.EqualFold(stem, "OBSIDI")) {
+		return false
+	}
+	for i := 0; i < len(num); i++ {
+		if num[i] < '0' || num[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // resolveExisting resolves symlinks in p. If p (or a suffix of it) does not
