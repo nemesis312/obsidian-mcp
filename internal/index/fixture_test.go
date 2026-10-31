@@ -81,7 +81,10 @@ func nfc(s string) string { return norm.NFC.String(s) }
 
 // The table is sorted by (from, toKind, to) in byte order, the order Graph()
 // returns; TestFixtureEdges asserts it.
-// It must agree with testdata/linkvault/README.md.
+// It must agree with testdata/linkvault/README.md. The probe notes
+// (SuffixProbe, ProbeSuffix2, md/ProbeWiki, md/ProbeDotSlash, b/ProbeMdDup,
+// deep/sub/ProbeTie, deep/sub/ProbeTieMd) and every other edge here were
+// checked against the Obsidian app's metadata cache on 2026-10-31.
 var fixtureEdges = []wantEdge{
 	{"CaseLinks.md", "Home.md", index.NodeNote, links.KindWikilink, false},
 	{"CaseLinks.md", "Upper/Shout.MD", index.NodeNote, links.KindWikilink, false},
@@ -100,16 +103,24 @@ var fixtureEdges = []wantEdge{
 	{"Home.md", "v1.2 notes.md", index.NodeNote, links.KindWikilink, false},
 	{"Home.md", "ghost target", index.NodeGhost, links.KindWikilink, false},
 	{"NFC.md", "nfd/Café.md", index.NodeNote, links.KindWikilink, false},
+	{"ProbeSuffix2.md", "deep/sub/Deep Note.md", index.NodeNote, links.KindWikilink, false},
 	{"SelfLink.md", "SelfLink.md", index.NodeNote, links.KindWikilink, false},
+	{"SuffixProbe.md", "b/c/Dup.md", index.NodeNote, links.KindWikilink, false},
 	{"Table.md", "deep/sub/Deep Note.md", index.NodeNote, links.KindWikilink, false},
 	{"b/Linker.md", "b/Dup.md", index.NodeNote, links.KindWikilink, true},
+	{"b/ProbeMdDup.md", "b/Dup.md", index.NodeNote, links.KindMarkdown, true},
+	{"deep/sub/ProbeTie.md", "deep/sub/Twin.md", index.NodeNote, links.KindWikilink, true},
+	{"deep/sub/ProbeTieMd.md", "deep/sub/Twin.md", index.NodeNote, links.KindMarkdown, true},
 	{"md/Forms.md", "Home.md", index.NodeNote, links.KindMarkdown, false},
+	{"md/Forms.md", "Peer.md", index.NodeNote, links.KindMarkdown, false},
 	{"md/Forms.md", "a/Dup.md", index.NodeNote, links.KindMarkdown, false},
-	{"md/Forms.md", "md/Peer.md", index.NodeNote, links.KindMarkdown, false},
+	{"md/Forms.md", "md/Forms.md", index.NodeNote, links.KindMarkdown, false},
 	{"md/Forms.md", "md/Percent Note.md", index.NodeNote, links.KindMarkdown, false},
 	{"md/Forms.md", "md/Spaced Note.md", index.NodeNote, links.KindMarkdown, false},
 	{"md/Forms.md", "assets/pic.png", index.NodeAttachment, links.KindMarkdown, false},
 	{"md/Forms.md", "../../outside", index.NodeGhost, links.KindMarkdown, false},
+	{"md/ProbeDotSlash.md", "md/Peer.md", index.NodeNote, links.KindMarkdown, false},
+	{"md/ProbeWiki.md", "Peer.md", index.NodeNote, links.KindWikilink, false},
 }
 
 func TestFixtureEdges(t *testing.T) {
@@ -195,8 +206,8 @@ func TestFixtureNodesAndOrphans(t *testing.T) {
 	if !reflect.DeepEqual(others, wantOthers) {
 		t.Errorf("non-note nodes = %v, want %v", others, wantOthers)
 	}
-	if notes != 24 {
-		t.Errorf("note nodes = %d, want 24", notes)
+	if notes != 33 {
+		t.Errorf("note nodes = %d, want 33", notes)
 	}
 	for _, n := range nodes {
 		if strings.Contains(strings.ToLower(n.ID), "not a link") {
@@ -204,7 +215,7 @@ func TestFixtureNodesAndOrphans(t *testing.T) {
 		}
 	}
 
-	wantOrphans := []string{"Lonely.md", "Peer.md", "README.md"}
+	wantOrphans := []string{"Lonely.md", "README.md", "q/Twin.md"}
 	if got := ix.Orphans(); !reflect.DeepEqual(got, wantOrphans) {
 		t.Errorf("Orphans = %v, want %v", got, wantOrphans)
 	}

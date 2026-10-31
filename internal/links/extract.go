@@ -88,7 +88,7 @@ func parseMarkdownLink(text, dest string) (Ref, bool) {
 	if len(dest) >= 2 && strings.HasPrefix(dest, "<") && strings.HasSuffix(dest, ">") {
 		dest = dest[1 : len(dest)-1]
 	}
-	if dest == "" || strings.HasPrefix(dest, "#") || schemeRe.MatchString(dest) {
+	if dest == "" || schemeRe.MatchString(dest) {
 		return Ref{}, false
 	}
 	ref := Ref{Alias: text}
@@ -96,7 +96,8 @@ func parseMarkdownLink(text, dest string) (Ref, bool) {
 	ref.Target = unescape(ref.Target)
 	ref.Heading = unescape(ref.Heading)
 	ref.Block = unescape(ref.Block)
-	if ref.Target == "" {
+	// "[x](#heading)" points to the note it is in, like "[[#heading]]".
+	if ref.Target == "" && ref.Heading == "" && ref.Block == "" {
 		return Ref{}, false
 	}
 	return ref, true

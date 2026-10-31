@@ -483,23 +483,22 @@ type edgeKey struct {
 }
 
 // target is what a ref's resolution depends on besides the source folder:
-// the target as links.NormalizeTarget keys it, whether it is rooted (only
-// markdown links honor that) and whether it is a markdown link (wikilinks
-// and embeds resolve alike). Spellings Resolve treats alike share a target.
+// the target as links.NormalizeTarget keys it (relative "./" targets keep
+// their prefix) and whether it is rooted. Every kind resolves alike, so the
+// kind is not part of it. Spellings Resolve treats alike share a target.
 type target struct {
-	key      string
-	rooted   bool
-	markdown bool
+	key    string
+	rooted bool
 }
 
 func targetOf(r links.Ref) target {
 	key, rooted := links.NormalizeTarget(r.Target)
-	md := r.Kind == links.KindMarkdown
-	return target{key: key, rooted: rooted && md, markdown: md}
+	return target{key: key, rooted: rooted}
 }
 
-// memoKey is what a resolution depends on: the source note's folder and the
-// normalized target, so a memo hit is always exact.
+// memoKey is what a resolution depends on: the source note's folder (for
+// the same-folder tie-break and "./" targets) and the normalized target, so
+// a memo hit is always exact.
 type memoKey struct {
 	dir string
 	t   target
