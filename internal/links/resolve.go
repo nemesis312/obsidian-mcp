@@ -11,9 +11,11 @@ package links
 //  3. A target starting with "/" is an exact path from the vault root.
 //  4. Otherwise an exact path from the vault root wins.
 //  5. Otherwise files whose path ends with the target, by whole segments,
-//     are candidates: the one in the source note's folder wins, then the one
-//     with the fewest segments, then the smallest Key. More than one
-//     candidate is Ambiguous.
+//     are candidates: the one in the source note's folder (compared as
+//     written, so "K/" is not "k/") wins, then the one with the fewest
+//     segments, then the smallest Key. More than one candidate is
+//     Ambiguous; an exact path (rules 2-4) never is, unless it has
+//     case-only duplicates.
 //  6. Notes are tried before attachments.
 //
 // Matching ignores case and Unicode form, and ".md" is optional for notes.
@@ -51,7 +53,7 @@ type Resolution struct {
 type file struct {
 	path string
 	key  string // Key(path), without ".md" for notes
-	dir  string // Key(path.Dir(path))
+	dir  string // path.Dir(path), as written: "K" and "k" are different folders
 	segs int
 }
 
@@ -90,7 +92,7 @@ func newFileSet(paths []string, notes bool) fileSet {
 		pk = Key(pk)
 		fs.byPath[pk] = append(fs.byPath[pk], p)
 		bk := path.Base(pk)
-		fs.byBase[bk] = append(fs.byBase[bk], file{path: p, key: pk, dir: Key(path.Dir(p)), segs: strings.Count(p, "/")})
+		fs.byBase[bk] = append(fs.byBase[bk], file{path: p, key: pk, dir: path.Dir(p), segs: strings.Count(p, "/")})
 	}
 	for _, list := range fs.byPath {
 		sort.Strings(list)
@@ -155,10 +157,24 @@ func cleanTarget(target string) (string, anchor) {
 		return "", a
 	}
 	t = path.Clean(t)
-	if a == anchorSource && t == "." {
-		return "", a // "./a/.." is the source folder: names no file
+	if onlyDots(t) {
+		return "", a // "a/..", "../", "../..": a folder, never a file
 	}
 	return t, a
+}
+
+// onlyDots reports whether a cleaned path is "." or made of ".." segments
+// only. Such a path names a folder, so the target names no file.
+func onlyDots(t string) bool {
+	if t == "." {
+		return true
+	}
+	for _, seg := range strings.Split(t, "/") {
+		if seg != ".." {
+			return false
+		}
+	}
+	return true
 }
 
 // NormalizeTarget returns the form of a non-empty target that Resolve
@@ -168,8 +184,8 @@ func cleanTarget(target string) (string, anchor) {
 // so "[[./ ./Index]]" and "[[./index]]" share the key "./index", which
 // differs from "index" and from "/index" (rooted). ".md" is kept because
 // "x.png" and "x.png.md" resolve differently. The key is "" when nothing
-// names a file ("/", "./"); an empty Target, which names the source note,
-// also yields "", so callers must check Target == "" first.
+// names a file ("/", "./", "a/..", "../"); an empty Target, which names the
+// source note, also yields "", so callers must check Target == "" first.
 func NormalizeTarget(target string) (key string, rooted bool) {
 	t, a := cleanTarget(target)
 	if t == "" {
@@ -186,7 +202,7 @@ func NormalizeTarget(target string) (key string, rooted bool) {
 // NormalizeTarget key without a "./" prefix or ".md". "[[Ghost]]",
 // "[[Ghost.md]]", "[[./Ghost]]" and "[g](Ghost.md)" share one key, even
 // when "./" is written in different folders. It is "" when the target names
-// nothing ("/", "./").
+// nothing ("/", "./", "a/..", "../").
 func GhostKey(target string) string {
 	k, _ := NormalizeTarget(target)
 	return trimMD(strings.TrimPrefix(k, "./"))
@@ -289,7 +305,7 @@ func suffix(fs *fileSet, fromNote, k string, attachment bool) (Resolution, bool)
 	if !nested && len(list) == 1 {
 		return Resolution{Status: Resolved, Path: list[0].path, Attachment: attachment}, true
 	}
-	dir := Key(path.Dir(fromNote))
+	dir := path.Dir(fromNote)
 	cands := make([]string, 0, len(list))
 	for _, f := range list {
 		if f.dir == dir && match(f) {

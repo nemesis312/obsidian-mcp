@@ -848,10 +848,10 @@ func TestEquivalentSpellingsAcrossNotesMemoized(t *testing.T) {
 	}
 }
 
-// A target that is only "/" or "./" names nothing: no edge, no ghost node
-// with an empty id.
+// A target that is only "/" or "./", or that cleans to "." or ".." only,
+// names nothing: no edge, no ghost node with an empty id or a dots id.
 func TestRootOnlyTargetHasNoEdge(t *testing.T) {
-	ix := build(t, newFake(map[string]string{"A.md": "[[/]] [[./]] [r](/) [[B]]", "B.md": ""}))
+	ix := build(t, newFake(map[string]string{"A.md": "[[/]] [[./]] [r](/) [[a/..]] [[.]] [[../]] [[..]] ![[../..]] [d](x/../..) [[B]]", "B.md": "", "x/C.md": "[[../]] [u](..)"}))
 	out, err := ix.Outgoing("A.md")
 	if err != nil {
 		t.Fatal(err)
@@ -861,7 +861,7 @@ func TestRootOnlyTargetHasNoEdge(t *testing.T) {
 	}
 	nodes, edges := ix.Graph()
 	for _, n := range nodes {
-		if n.ID == "" {
+		if n.ID == "" || n.ID == "." || n.ID == ".." {
 			t.Fatalf("graph node with empty id: %+v", nodes)
 		}
 	}

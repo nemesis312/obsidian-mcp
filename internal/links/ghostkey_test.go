@@ -21,6 +21,9 @@ func TestGhostKey(t *testing.T) {
 		"x/../../outside":  "../outside",
 		"./sub/Ghost":      "sub/ghost",
 		"café":             "café",
+		"a/..":             "",
+		"..":               "",
+		"../":              "",
 	} {
 		if got := links.GhostKey(in); got != want {
 			t.Errorf("GhostKey(%q) = %q, want %q", in, got, want)
@@ -44,6 +47,15 @@ func TestNormalizeTarget(t *testing.T) {
 		{"x/../../A", "../a", false},
 		{"a/./b/../Index", "a/index", false},
 		{"./a/..", "", false},
+		{"a/..", "", false},
+		{".", "", false},
+		{"..", "", false},
+		{"../", "", false},
+		{"../..", "", false},
+		{"./../..", "", false},
+		{"a/../../..", "", false},
+		{"/..", "", true},
+		{"../x", "./../x", false},
 		{"/", "", true},
 		{"./", "", false},
 		{"", "", false},

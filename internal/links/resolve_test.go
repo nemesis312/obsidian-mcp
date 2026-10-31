@@ -149,7 +149,8 @@ func TestResolveCaseOnlyDuplicates(t *testing.T) {
 	}{
 		{"z.md", "Same", links.KindWikilink, links.Resolution{Status: links.Ambiguous, Path: "K/SAME.md", Candidates: same}},
 		{"z.md", "k/same", links.KindWikilink, links.Resolution{Status: links.Ambiguous, Path: "K/SAME.md", Candidates: same}},
-		{"k/x.md", "same.md", links.KindMarkdown, links.Resolution{Status: links.Ambiguous, Path: "K/SAME.md", Candidates: same}},
+		// "K/" is another folder than "k/": the same-folder tie-break compares raw folders.
+		{"k/x.md", "same.md", links.KindMarkdown, links.Resolution{Status: links.Ambiguous, Path: "k/Same.md", Candidates: []string{"k/Same.md", "k/same.md", "K/SAME.md"}}},
 		{"z.md", "q", links.KindWikilink, links.Resolution{Status: links.Ambiguous, Path: "M/q.md", Candidates: []string{"M/q.md", "m/Q.md"}}},
 		{"z.md", "SOLO", links.KindWikilink, links.Resolution{Status: links.Resolved, Path: "solo.md"}},
 		{"z.md", "a.png", links.KindEmbed, links.Resolution{Status: links.Ambiguous, Path: "I/a.png", Candidates: []string{"I/a.png", "i/A.PNG"}, Attachment: true}},
@@ -163,6 +164,23 @@ func TestResolveCaseOnlyDuplicates(t *testing.T) {
 	for arg, want := range map[string]string{"k/same": "K/SAME.md", "K/same.md": "K/SAME.md", "m/q": "M/q.md", "i/a.png": "I/a.png"} {
 		if got, ok := r.Lookup(arg); !ok || got != want {
 			t.Errorf("Lookup(%q) = %q, %v; want %q", arg, got, ok, want)
+		}
+	}
+}
+
+// The same-folder tie-break compares folders as written: "K/" and "k/" are
+// different folders, so neither is the source note's folder for the other.
+func TestResolveSameFolderIsCaseSensitive(t *testing.T) {
+	r := links.NewResolver([]string{"K/Dup.md", "a/Dup.md"}, nil)
+	for _, tc := range []struct {
+		from string
+		want links.Resolution
+	}{
+		{"k/x.md", links.Resolution{Status: links.Ambiguous, Path: "a/Dup.md", Candidates: []string{"a/Dup.md", "K/Dup.md"}}},
+		{"K/x.md", links.Resolution{Status: links.Ambiguous, Path: "K/Dup.md", Candidates: []string{"K/Dup.md", "a/Dup.md"}}},
+	} {
+		if got := r.Resolve(tc.from, links.Ref{Kind: links.KindWikilink, Target: "Dup"}); !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("Resolve(%q, Dup) = %+v, want %+v", tc.from, got, tc.want)
 		}
 	}
 }
