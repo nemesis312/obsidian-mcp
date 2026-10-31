@@ -79,10 +79,26 @@ Add to your MCP client configuration (e.g., Claude Desktop):
 
 ## Available Tools
 
+### Addressing, versions and errors
+
+Every tool that takes a note accepts `path` as a vault-relative path (with or without `.md`) or as a bare note name (`"Deep Note"`), resolved the way a `[[Deep Note]]` link written at the vault root would be. A leading `/` means the vault root. Absolute filesystem paths are refused (`absolute paths are not accepted`). A name that matches several notes is an error that lists them (`ambiguous note name "Dup": matches a/Dup.md, b/Dup.md; pass one of these paths`); an unknown name lists close matches (`note not found: Deep Not; did you mean: sub/Deep Note.md?`). Results report the canonical path.
+
+Every note has a `version`: `sha256:` plus 16 hex characters of the hash of its bytes. `get_note` and `get_note_metadata` return it, and every write returns the new one.
+
+| Tool | `expected_version` | Result |
+| --- | --- | --- |
+| `patch_note`, `delete_note` | Required. Without it the call is refused (`expected_version is required ...`). If the note changed, the call is refused with `version conflict: ... current version: sha256:...`. | `patch_note`: `{"success":true,"path":"n.md","version":"sha256:..."}`. `delete_note`: `{"success":true,"path":"n.md"}`. |
+| `append_to_note`, `update_frontmatter` | Optional. When given, it is checked the same way. | `{"success":true,"path":"n.md","version":"sha256:..."}` |
+| `create_note` | Not used. `path` is a path, not a name; a leading `/` means the vault root. | `{"success":true,"path":"n.md","version":"sha256:..."}` |
+
+`get_note` returns `{"path":"n.md","version":"sha256:...","content":"..."}`. `get_note_metadata` returns its usual object plus `version`, with `path` canonical. `get_frontmatter` still returns the bare frontmatter map.
+
+Error messages that changed: a write to a path that is not a `.md` note now says `note not found`, and `get_linked_mentions` with an unknown name now says `note not found` too.
+
 ### Read Tools (5)
 
 1. **list_vault_files** - List all markdown files
-2. **get_note** - Read note content
+2. **get_note** - Read note content with its path and version
 3. **search_vault** - Search for notes containing query
 4. **get_frontmatter** - Extract YAML frontmatter
 5. **get_note_metadata** - Get frontmatter, links, and backlinks

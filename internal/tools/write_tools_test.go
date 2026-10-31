@@ -143,18 +143,33 @@ func TestAppendToNote(t *testing.T) {
 	}
 }
 
+// versionOf reads rel through get_note and returns its version token.
+func (e *env) versionOf(rel string) string {
+	e.t.Helper()
+	out, isErr := e.call("get_note", map[string]any{"path": rel})
+	if isErr {
+		e.t.Fatalf("get_note %s: %s", rel, out)
+	}
+	var r struct {
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal([]byte(out), &r); err != nil {
+		e.t.Fatal(err)
+	}
+	return r.Version
+}
+
 func TestPatchNote(t *testing.T) {
-	t.Skip("updated in Task 4")
 	e := newEnv(t)
 	e.write("n.md", "old")
 
-	if out, isErr := e.call("patch_note", map[string]any{"path": "n.md", "content": "new"}); isErr {
+	if out, isErr := e.call("patch_note", map[string]any{"path": "n.md", "content": "new", "expected_version": e.versionOf("n.md")}); isErr {
 		t.Fatalf("unexpected error: %s", out)
 	}
 	if got := e.read("n.md"); got != "new" {
 		t.Errorf("content = %q", got)
 	}
-	if _, isErr := e.call("patch_note", map[string]any{"path": "script.sh", "content": "x"}); !isErr {
+	if _, isErr := e.call("patch_note", map[string]any{"path": "script.sh", "content": "x", "expected_version": "sha256:0123456789abcdef"}); !isErr {
 		t.Error("non-md must fail")
 	}
 	if e.exists("script.sh") {
@@ -187,21 +202,20 @@ func TestUpdateFrontmatter(t *testing.T) {
 }
 
 func TestDeleteNote(t *testing.T) {
-	t.Skip("updated in Task 4")
 	e := newEnv(t)
 	e.write("n.md", "x")
 	e.write("keep.txt", "x")
 
-	if out, isErr := e.call("delete_note", map[string]any{"path": "n.md"}); isErr {
+	if out, isErr := e.call("delete_note", map[string]any{"path": "n.md", "expected_version": e.versionOf("n.md")}); isErr {
 		t.Fatalf("unexpected error: %s", out)
 	}
 	if e.exists("n.md") {
 		t.Error("note still exists")
 	}
-	if _, isErr := e.call("delete_note", map[string]any{"path": "n.md"}); !isErr {
+	if _, isErr := e.call("delete_note", map[string]any{"path": "n.md", "expected_version": "sha256:0123456789abcdef"}); !isErr {
 		t.Error("deleting missing note must fail")
 	}
-	if _, isErr := e.call("delete_note", map[string]any{"path": "keep.txt"}); !isErr {
+	if _, isErr := e.call("delete_note", map[string]any{"path": "keep.txt", "expected_version": "sha256:0123456789abcdef"}); !isErr {
 		t.Error("non-md delete must fail")
 	}
 	if !e.exists("keep.txt") {
