@@ -192,6 +192,28 @@ func TestGhostEdge(t *testing.T) {
 	}
 }
 
+// Ghosts dedupe by the normalized target, as Resolve sees it.
+func TestGhostDedupeByNormalizedTarget(t *testing.T) {
+	ix := build(t, newFake(map[string]string{"A.md": "[[Ghost]] [[Ghost.md]] [[./Ghost]] [g](Ghost.md) [[sub/../Ghost]]"}))
+	out, err := ix.Outgoing("A.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 1 || out[0].ToKind != index.NodeGhost || out[0].To != "ghost" || out[0].Raw != "[[Ghost]]" {
+		t.Fatalf("Outgoing = %+v, want one ghost edge to \"ghost\"", out)
+	}
+	nodes, _ := ix.Graph()
+	ghosts := 0
+	for _, n := range nodes {
+		if n.Kind == index.NodeGhost {
+			ghosts++
+		}
+	}
+	if ghosts != 1 {
+		t.Fatalf("ghost nodes = %d, want 1: %+v", ghosts, nodes)
+	}
+}
+
 func TestDedupeByResolvedTarget(t *testing.T) {
 	ix := build(t, newFake(map[string]string{"A.md": "[[sub/B]] [[sub/B.md]] [[B]]", "sub/B.md": ""}))
 	out, err := ix.Outgoing("A.md")
@@ -538,25 +560,35 @@ func TestUnreadableNote(t *testing.T) {
 		t.Fatalf("Outgoing(X) = %+v, %v", out, err)
 	}
 
+	// A failed read records a zero stat, so every Refresh retries it.
+	src.reads.Store(0)
+	if err := ix.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+	if n := src.reads.Load(); n != 1 {
+		t.Fatalf("reads = %d, want 1 (unreadable note retried)", n)
+	}
+
+	// A transient failure heals on the next Refresh with no stat change.
+	src.setFail("X.md", nil)
+	src.reads.Store(0)
+	if err := ix.Refresh(); err != nil {
+		t.Fatal(err)
+	}
+	if n := src.reads.Load(); n != 1 {
+		t.Fatalf("reads = %d, want 1 after the failure cleared", n)
+	}
+	back, _ = ix.Backlinks("B.md")
+	if !contains(froms(back), "X.md") {
+		t.Fatalf("Backlinks(B) = %+v, want X.md after the heal", back)
+	}
+	// Once read, it is not read again until its stat changes.
 	src.reads.Store(0)
 	if err := ix.Refresh(); err != nil {
 		t.Fatal(err)
 	}
 	if n := src.reads.Load(); n != 0 {
-		t.Fatalf("reads = %d, want 0 (unreadable note not retried)", n)
-	}
-
-	src.setFail("X.md", nil)
-	src.set("X.md", "[[B]] again")
-	if err := ix.Refresh(); err != nil {
-		t.Fatal(err)
-	}
-	if n := src.reads.Load(); n != 1 {
-		t.Fatalf("reads = %d, want 1 after stat change", n)
-	}
-	back, _ = ix.Backlinks("B.md")
-	if !contains(froms(back), "X.md") {
-		t.Fatalf("Backlinks(B) = %+v, want X.md after re-read", back)
+		t.Fatalf("reads = %d, want 0 once healed", n)
 	}
 }
 

@@ -46,8 +46,9 @@ func linkKindName(k links.Kind) string {
 }
 
 type backlinkJSON struct {
-	From string `json:"from"`
-	Kind string `json:"kind"`
+	From      string `json:"from"`
+	Kind      string `json:"kind"`
+	Ambiguous bool   `json:"ambiguous"`
 }
 
 type outLinkJSON struct {
@@ -63,10 +64,11 @@ type nodeJSON struct {
 }
 
 type edgeJSON struct {
-	From   string `json:"from"`
-	To     string `json:"to"`
-	ToKind string `json:"to_kind"`
-	Kind   string `json:"kind"`
+	From      string `json:"from"`
+	To        string `json:"to"`
+	ToKind    string `json:"to_kind"`
+	Kind      string `json:"kind"`
+	Ambiguous bool   `json:"ambiguous"`
 }
 
 // jsonResult marshals v compactly as the tool's text result.
@@ -115,7 +117,7 @@ func registerGetBacklinks(s *server.MCPServer, v *vault.Vault) {
 
 		backlinks := make([]backlinkJSON, 0, len(edges))
 		for _, e := range edges {
-			backlinks = append(backlinks, backlinkJSON{From: e.From, Kind: linkKindName(e.Kind)})
+			backlinks = append(backlinks, backlinkJSON{From: e.From, Kind: linkKindName(e.Kind), Ambiguous: e.Ambiguous})
 		}
 		return jsonResult(struct {
 			Path      string         `json:"path"`
@@ -242,7 +244,7 @@ func registerGetLinkGraph(s *server.MCPServer, v *vault.Vault) {
 		}
 		edges := make([]edgeJSON, 0, len(gedges))
 		for _, e := range gedges {
-			edges = append(edges, edgeJSON{From: e.From, To: e.To, ToKind: nodeKindName(e.ToKind), Kind: linkKindName(e.Kind)})
+			edges = append(edges, edgeJSON{From: e.From, To: e.To, ToKind: nodeKindName(e.ToKind), Kind: linkKindName(e.Kind), Ambiguous: e.Ambiguous})
 		}
 		return jsonResult(struct {
 			Nodes     []nodeJSON `json:"nodes"`

@@ -252,42 +252,75 @@ func TestSourceReadNoteKeepsContainment(t *testing.T) {
 	}
 }
 
+// An unreadable subdirectory is skipped: the rest of the vault is indexed.
+func TestUnreadableSubdirSkipped(t *testing.T) {
+	skipNoChmod(t)
+	v := newTestVault(t)
+	writeRaw(t, v, "A.md", "[[B]]")
+	writeRaw(t, v, "B.md", "")
+	writeRaw(t, v, "Lonely.md", "")
+	locked := filepath.Join(v.Root(), "locked")
+	writeRaw(t, v, "locked/n.md", "[[A]]")
+	lock(t, locked)
+
+	orphans, err := v.GetOrphanedNotes()
+	if err != nil {
+		t.Fatalf("GetOrphanedNotes with a locked subdir: %v", err)
+	}
+	if strings.Join(orphans, ",") != "Lonely.md" {
+		t.Errorf("orphans = %v, want Lonely.md", orphans)
+	}
+	if _, edges, err := v.BuildLinkGraph(); err != nil || len(edges) != 1 {
+		t.Errorf("BuildLinkGraph = %+v, %v; want one edge A -> B", edges, err)
+	}
+}
+
 // A failed first Build must not be remembered: once the cause is gone the
-// next graph call builds the index.
+// next graph call builds the index. An unreadable vault root still fails.
 func TestLinkIndexRetriesAfterBuildFailure(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("chmod 000 does not block directory reads on Windows")
-	}
-	if os.Geteuid() == 0 {
-		t.Skip("root ignores directory permissions")
-	}
+	skipNoChmod(t)
 	v := newTestVault(t)
 	writeRaw(t, v, "A.md", "x")
-	locked := filepath.Join(v.Root(), "locked")
-	writeRaw(t, v, "locked/n.md", "x")
-	if err := os.Chmod(locked, 0); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+	writeRaw(t, v, "sub/n.md", "x")
+	lock(t, v.Root())
 
 	_, err := v.GetOrphanedNotes()
 	if err == nil {
-		t.Fatal("want a build error while locked/ is unreadable")
+		t.Fatal("want a build error while the vault root is unreadable")
 	}
 	if strings.Contains(err.Error(), v.Root()) {
 		t.Errorf("build error leaks root: %q", err)
 	}
 
-	if err := os.Chmod(locked, 0o755); err != nil {
+	if err := os.Chmod(v.Root(), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	orphans, err := v.GetOrphanedNotes()
 	if err != nil {
 		t.Fatalf("second call after restoring the mode: %v", err)
 	}
-	if strings.Join(orphans, ",") != "A.md,locked/n.md" {
+	if strings.Join(orphans, ",") != "A.md,sub/n.md" {
 		t.Errorf("orphans = %v", orphans)
 	}
+}
+
+func skipNoChmod(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod 000 does not block directory reads on Windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+}
+
+// lock makes dir unreadable until the test ends.
+func lock(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.Chmod(dir, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
 }
 
 // ".MD" is a note in any case, as the resolver treats it: listed by

@@ -29,9 +29,10 @@ type Resolution struct {
 }
 
 // fileSet indexes a set of vault paths by full-path key and basename key.
+// Paths whose keys differ only by case or Unicode form share one key.
 type fileSet struct {
-	byPath map[string]string
-	byBase map[string][]string // sorted by segments, then Key(path)
+	byPath map[string][]string // sorted lexicographically
+	byBase map[string][]string // sorted by segments, then Key(path), then path
 }
 
 // Resolver resolves link targets against the paths of a vault. It does no I/O.
@@ -48,33 +49,25 @@ func NewResolver(notes, attachments []string) *Resolver {
 }
 
 func newFileSet(paths []string, notes bool) fileSet {
-	fs := fileSet{byPath: map[string]string{}, byBase: map[string][]string{}}
-	keys := make(map[string]string, len(paths)) // path -> its path key
+	fs := fileSet{byPath: map[string][]string{}, byBase: map[string][]string{}}
+	seen := make(map[string]bool, len(paths))
 	for _, p := range paths {
-		pk := p
-		if notes {
-			pk = trimMD(pk)
-		}
-		pk = Key(pk)
-		keys[p] = pk
-		if old, ok := fs.byPath[pk]; !ok || p < old {
-			fs.byPath[pk] = p
-		}
-	}
-	// Only the path chosen for each key enters the basename index, so
-	// case-only duplicates never make a basename ambiguous.
-	for p, pk := range keys {
-		if fs.byPath[pk] != p {
+		if seen[p] {
 			continue
 		}
-		bk := path.Base(p)
+		seen[p] = true
+		pk, bk := p, path.Base(p)
 		if notes {
-			bk = trimMD(bk)
+			pk, bk = trimMD(pk), trimMD(bk)
 		}
-		bk = Key(bk)
+		pk, bk = Key(pk), Key(bk)
+		fs.byPath[pk] = append(fs.byPath[pk], p)
 		fs.byBase[bk] = append(fs.byBase[bk], p)
 	}
-	for k, list := range fs.byBase {
+	for _, list := range fs.byPath {
+		sort.Strings(list)
+	}
+	for _, list := range fs.byBase {
 		sort.Slice(list, func(i, j int) bool {
 			si, sj := strings.Count(list[i], "/"), strings.Count(list[j], "/")
 			if si != sj {
@@ -86,19 +79,8 @@ func newFileSet(paths []string, notes bool) fileSet {
 			}
 			return list[i] < list[j]
 		})
-		fs.byBase[k] = dedupe(list)
 	}
 	return fs
-}
-
-func dedupe(s []string) []string {
-	out := s[:0]
-	for i, v := range s {
-		if i == 0 || v != s[i-1] {
-			out = append(out, v)
-		}
-	}
-	return out
 }
 
 // trimMD removes a trailing ".md" (any case).
@@ -111,14 +93,41 @@ func trimMD(s string) string {
 
 func escapes(p string) bool { return p == ".." || strings.HasPrefix(p, "../") }
 
+// trimTarget strips what Resolve ignores in front of a target: surrounding
+// spaces, "./" prefixes and leading "/" (rooted reports whether there was one).
+func trimTarget(target string) (t string, rooted bool) {
+	t = strings.TrimSpace(target)
+	for strings.HasPrefix(t, "./") {
+		t = strings.TrimSpace(t[2:])
+	}
+	rooted = strings.HasPrefix(t, "/")
+	return strings.TrimLeft(t, "/"), rooted
+}
+
+// GhostKey returns the key an unresolved target is known by: the target
+// normalized as Resolve matches it (trimmed, "./" and leading "/" removed,
+// cleaned, ".md" removed) and then Key'd. "[[Ghost]]", "[[Ghost.md]]",
+// "[[./Ghost]]" and "[g](Ghost.md)" share one key.
+func GhostKey(target string) string {
+	t, _ := trimTarget(target)
+	if t == "" {
+		return ""
+	}
+	return Key(trimMD(path.Clean(t)))
+}
+
 // Lookup finds a path by exact, case/NFC-insensitive match with ".md" optional.
 // It returns the canonical path.
+// Paths that differ only by case or Unicode form share a key; the
+// lexicographically smallest one is returned.
 func (r *Resolver) Lookup(p string) (string, bool) {
-	if c, ok := r.notes.byPath[Key(trimMD(p))]; ok {
-		return c, true
+	if list := r.notes.byPath[Key(trimMD(p))]; len(list) > 0 {
+		return list[0], true
 	}
-	c, ok := r.attachments.byPath[Key(p)]
-	return c, ok
+	if list := r.attachments.byPath[Key(p)]; len(list) > 0 {
+		return list[0], true
+	}
+	return "", false
 }
 
 // Resolve resolves ref, found in fromNote, following Obsidian's rules.
@@ -126,12 +135,7 @@ func (r *Resolver) Resolve(fromNote string, ref Ref) Resolution {
 	if ref.Target == "" {
 		return Resolution{Status: Resolved, Path: fromNote}
 	}
-	t := strings.TrimSpace(ref.Target)
-	for strings.HasPrefix(t, "./") {
-		t = strings.TrimSpace(t[2:])
-	}
-	rooted := strings.HasPrefix(t, "/")
-	t = strings.TrimLeft(t, "/")
+	t, rooted := trimTarget(ref.Target)
 	if t == "" {
 		return Resolution{Status: Unresolved}
 	}
@@ -141,12 +145,12 @@ func (r *Resolver) Resolve(fromNote string, ref Ref) Resolution {
 		if escapes(rel) {
 			return Resolution{Status: Unresolved}
 		}
-		if c, ok := r.notes.byPath[Key(trimMD(rel))]; ok {
-			return Resolution{Status: Resolved, Path: c}
+		if list := r.notes.byPath[Key(trimMD(rel))]; len(list) > 0 {
+			return pick(list, false)
 		}
 		if path.Ext(rel) != "" {
-			if c, ok := r.attachments.byPath[Key(rel)]; ok {
-				return Resolution{Status: Resolved, Path: c, Attachment: true}
+			if list := r.attachments.byPath[Key(rel)]; len(list) > 0 {
+				return pick(list, true)
 			}
 		}
 	}
@@ -167,15 +171,25 @@ func (r *Resolver) Resolve(fromNote string, ref Ref) Resolution {
 	return Resolution{Status: Unresolved}
 }
 
+// pick resolves to the single path of list, or, when several paths share
+// one key (case-only duplicates), to an Ambiguous result: the resolver never
+// silently picks. list is sorted, so Path is the smallest.
+func pick(list []string, attachment bool) Resolution {
+	if len(list) == 1 {
+		return Resolution{Status: Resolved, Path: list[0], Attachment: attachment}
+	}
+	return Resolution{Status: Ambiguous, Path: list[0], Candidates: append([]string(nil), list...), Attachment: attachment}
+}
+
 // match looks up key (already trimmed as the set expects) either as a full
 // path from the vault root, when t has a "/", or by basename.
 func (r *Resolver) match(fs *fileSet, fromNote, t, name string, attachment bool) (Resolution, bool) {
 	if strings.Contains(t, "/") {
-		c, ok := fs.byPath[Key(name)]
-		if !ok {
+		list := fs.byPath[Key(name)]
+		if len(list) == 0 {
 			return Resolution{}, false
 		}
-		return Resolution{Status: Resolved, Path: c, Attachment: attachment}, true
+		return pick(list, attachment), true
 	}
 	list := fs.byBase[Key(name)]
 	switch len(list) {

@@ -101,21 +101,34 @@ func TestKey(t *testing.T) {
 	}
 }
 
+// Case-only duplicates (same Key, different spelling) are never silently
+// picked: path and basename matches are Ambiguous, with every spelling as a
+// candidate and the lexicographically smallest as Path. Lookup still returns
+// the smallest, deterministically.
 func TestResolveCaseOnlyDuplicates(t *testing.T) {
-	r := links.NewResolver([]string{"k/Same.md", "K/SAME.md", "k/same.md", "m/Q.md", "M/q.md"}, []string{"i/A.PNG", "I/a.png"})
-	for _, tc := range []struct{ from, target, want string }{
-		{"z.md", "Same", "K/SAME.md"},
-		{"z.md", "k/same", "K/SAME.md"},
-		{"z.md", "q", "M/q.md"},
+	r := links.NewResolver([]string{"k/Same.md", "K/SAME.md", "k/same.md", "m/Q.md", "M/q.md", "solo.md"}, []string{"i/A.PNG", "I/a.png"})
+	same := []string{"K/SAME.md", "k/Same.md", "k/same.md"}
+	for _, tc := range []struct {
+		from, target string
+		kind         links.Kind
+		want         links.Resolution
+	}{
+		{"z.md", "Same", links.KindWikilink, links.Resolution{Status: links.Ambiguous, Path: "K/SAME.md", Candidates: same}},
+		{"z.md", "k/same", links.KindWikilink, links.Resolution{Status: links.Ambiguous, Path: "K/SAME.md", Candidates: same}},
+		{"k/x.md", "same.md", links.KindMarkdown, links.Resolution{Status: links.Ambiguous, Path: "K/SAME.md", Candidates: same}},
+		{"z.md", "q", links.KindWikilink, links.Resolution{Status: links.Ambiguous, Path: "M/q.md", Candidates: []string{"M/q.md", "m/Q.md"}}},
+		{"z.md", "SOLO", links.KindWikilink, links.Resolution{Status: links.Resolved, Path: "solo.md"}},
+		{"z.md", "a.png", links.KindEmbed, links.Resolution{Status: links.Ambiguous, Path: "I/a.png", Candidates: []string{"I/a.png", "i/A.PNG"}, Attachment: true}},
+		{"z.md", "i/a.png", links.KindEmbed, links.Resolution{Status: links.Ambiguous, Path: "I/a.png", Candidates: []string{"I/a.png", "i/A.PNG"}, Attachment: true}},
 	} {
-		got := r.Resolve(tc.from, links.Ref{Kind: links.KindWikilink, Target: tc.target})
-		want := links.Resolution{Status: links.Resolved, Path: tc.want}
-		if !reflect.DeepEqual(got, want) {
-			t.Errorf("Resolve(%q) = %+v, want %+v", tc.target, got, want)
+		got := r.Resolve(tc.from, links.Ref{Kind: tc.kind, Target: tc.target})
+		if !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("Resolve(%q, %q) = %+v, want %+v", tc.from, tc.target, got, tc.want)
 		}
 	}
-	got := r.Resolve("z.md", links.Ref{Kind: links.KindEmbed, Target: "a.png"})
-	if want := (links.Resolution{Status: links.Resolved, Path: "I/a.png", Attachment: true}); !reflect.DeepEqual(got, want) {
-		t.Errorf("attachment = %+v, want %+v", got, want)
+	for arg, want := range map[string]string{"k/same": "K/SAME.md", "K/same.md": "K/SAME.md", "m/q": "M/q.md", "i/a.png": "I/a.png"} {
+		if got, ok := r.Lookup(arg); !ok || got != want {
+			t.Errorf("Lookup(%q) = %q, %v; want %q", arg, got, ok, want)
+		}
 	}
 }

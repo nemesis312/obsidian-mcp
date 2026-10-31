@@ -47,7 +47,7 @@ const (
 // Edge is a resolved link from a note.
 type Edge struct {
 	From      string // note path
-	To        string // path for note/attachment; links.Key(target) for ghost
+	To        string // path for note/attachment; links.GhostKey(target) for ghost
 	ToKind    NodeKind
 	Kind      links.Kind
 	Ambiguous bool
@@ -125,8 +125,8 @@ type readResult struct {
 // ones and re-resolves every edge when the set of paths changed. When nothing
 // changed it costs one stat walk and no reads. It returns an error only when
 // the stat walk fails. A note that cannot be read (other than not existing)
-// is indexed as an empty note with its stat recorded, so it is not retried
-// until its stat changes.
+// is indexed as an empty note with a zero stat, so every Refresh retries it
+// until a read succeeds.
 func (ix *Index) Refresh() error {
 	ticket := ix.refreshReq.Add(1)
 	ix.refreshMu.Lock()
@@ -219,12 +219,14 @@ func (ix *Index) apply(snap uint64, toRead []readResult, deleted []string, attsC
 			}
 			continue
 		}
-		content := r.content
+		content, stat := r.content, r.stat
 		if r.err != nil {
-			content = "" // unreadable: an existing note with no content
+			// Unreadable: an existing note with no content. A zero stat
+			// makes the next Refresh retry it, so transient locks heal.
+			content, stat = "", FileStat{}
 		}
 		e := parse(r.path, content)
-		e.stat = r.stat
+		e.stat = stat
 		ix.notes[r.path] = e
 		changed = append(changed, e)
 		if !existed {
@@ -504,7 +506,7 @@ func (ix *Index) resolveRef(from string, ref links.Ref, memo resolveMemo) memoVa
 	var v memoVal
 	switch {
 	case res.Status == links.Unresolved:
-		v.toKind, v.to = NodeGhost, links.Key(ref.Target)
+		v.toKind, v.to = NodeGhost, links.GhostKey(ref.Target)
 	case res.Attachment:
 		v.toKind, v.to = NodeAttachment, res.Path
 	default:

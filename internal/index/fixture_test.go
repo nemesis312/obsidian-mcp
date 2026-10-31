@@ -108,7 +108,7 @@ var fixtureEdges = []wantEdge{
 	{"md/Forms.md", "md/Percent Note.md", index.NodeNote, links.KindMarkdown, false},
 	{"md/Forms.md", "md/Spaced Note.md", index.NodeNote, links.KindMarkdown, false},
 	{"md/Forms.md", "assets/pic.png", index.NodeAttachment, links.KindMarkdown, false},
-	{"md/Forms.md", "../../outside.md", index.NodeGhost, links.KindMarkdown, false},
+	{"md/Forms.md", "../../outside", index.NodeGhost, links.KindMarkdown, false},
 }
 
 func TestFixtureEdges(t *testing.T) {
@@ -179,7 +179,7 @@ func TestFixtureNodesAndOrphans(t *testing.T) {
 	wantOthers := []string{
 		"attachment:assets/pic.png",
 		"attachment:docs/doc.pdf",
-		"ghost:../../outside.md",
+		"ghost:../../outside",
 		"ghost:ghost target",
 		"ghost:missing.png",
 	}

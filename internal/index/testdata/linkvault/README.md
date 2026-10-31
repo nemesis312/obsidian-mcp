@@ -24,7 +24,7 @@ The test copies this folder to a temp dir and adds `nfd/Café.md` there, with th
 | `md/Forms.md` | `[up](../Home.md#Section)` | `Home.md` |
 | `md/Forms.md` | `[rooted](/a/Dup.md)` | `a/Dup.md`, not ambiguous |
 | `md/Forms.md` | `![image](../assets/pic.png)` | attachment `assets/pic.png` |
-| `md/Forms.md` | `[out](../../outside.md)` | ghost `../../outside.md` (escapes the vault) |
+| `md/Forms.md` | `[out](../../outside.md)` | ghost `../../outside` (escapes the vault; ghost keys drop `.md`) |
 | `md/Forms.md` | external URL, `#Forms` | no edge |
 | `Table.md` | `[[Deep Note\|alias]]` in a table cell | `deep/sub/Deep Note.md` |
 | `Embeds.md` | `![[Home]]` | `Home.md` (embed) |

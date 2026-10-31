@@ -12,6 +12,9 @@ func TestGraphToolsJSON(t *testing.T) {
 	e.write("sub/B.md", "[x](../A.md)")
 	e.write("img.png", "p")
 	e.write("Lonely.md", "")
+	e.write("x/Dup.md", "")
+	e.write("y/Dup.md", "[[A]]")
+	e.write("Amb.md", "[[Dup]]")
 
 	noBackslash := func(tool, text string) {
 		t.Helper()
@@ -35,8 +38,9 @@ func TestGraphToolsJSON(t *testing.T) {
 	var bl struct {
 		Path      string `json:"path"`
 		Backlinks []struct {
-			From string `json:"from"`
-			Kind string `json:"kind"`
+			From      string `json:"from"`
+			Kind      string `json:"kind"`
+			Ambiguous *bool  `json:"ambiguous"`
 		} `json:"backlinks"`
 		Count int `json:"count"`
 	}
@@ -44,8 +48,13 @@ func TestGraphToolsJSON(t *testing.T) {
 		t.Fatalf("unmarshal %s: %v", text, err)
 	}
 	if bl.Path != "sub/B.md" || bl.Count != 1 || len(bl.Backlinks) != 1 ||
-		bl.Backlinks[0].From != "A.md" || bl.Backlinks[0].Kind != "wikilink" {
+		bl.Backlinks[0].From != "A.md" || bl.Backlinks[0].Kind != "wikilink" ||
+		bl.Backlinks[0].Ambiguous == nil || *bl.Backlinks[0].Ambiguous {
 		t.Errorf("get_backlinks = %s", text)
+	}
+	text, _ = e.call("get_backlinks", map[string]any{"path": "x/Dup.md"})
+	if !strings.Contains(text, `{"from":"Amb.md","kind":"wikilink","ambiguous":true}`) {
+		t.Errorf("get_backlinks(x/Dup.md) = %s, want an ambiguous backlink from Amb.md", text)
 	}
 
 	// get_outgoing_links
@@ -116,10 +125,11 @@ func TestGraphToolsJSON(t *testing.T) {
 			Kind string `json:"kind"`
 		} `json:"nodes"`
 		Edges []struct {
-			From   string `json:"from"`
-			To     string `json:"to"`
-			ToKind string `json:"to_kind"`
-			Kind   string `json:"kind"`
+			From      string `json:"from"`
+			To        string `json:"to"`
+			ToKind    string `json:"to_kind"`
+			Kind      string `json:"kind"`
+			Ambiguous *bool  `json:"ambiguous"`
 		} `json:"edges"`
 		NodeCount int `json:"node_count"`
 		EdgeCount int `json:"edge_count"`
@@ -127,17 +137,25 @@ func TestGraphToolsJSON(t *testing.T) {
 	if err := json.Unmarshal([]byte(text), &g); err != nil {
 		t.Fatalf("unmarshal %s: %v", text, err)
 	}
-	if g.NodeCount != len(g.Nodes) || g.EdgeCount != len(g.Edges) || g.NodeCount != 5 || g.EdgeCount != 4 {
+	if g.NodeCount != len(g.Nodes) || g.EdgeCount != len(g.Edges) || g.NodeCount != 8 || g.EdgeCount != 6 {
 		t.Errorf("get_link_graph counts = %s", text)
 	}
-	ghost := false
+	ghost, amb := false, false
 	for _, ed := range g.Edges {
+		if ed.Ambiguous == nil {
+			t.Errorf("edge %s -> %s has no ambiguous field", ed.From, ed.To)
+		} else if *ed.Ambiguous {
+			amb = ed.From == "Amb.md" && ed.To == "x/Dup.md"
+		}
 		if ed.ToKind == "ghost" && ed.To == "missing" && ed.From == "A.md" && ed.Kind == "wikilink" {
 			ghost = true
 		}
 	}
 	if !ghost {
 		t.Errorf("get_link_graph has no ghost edge: %s", text)
+	}
+	if !amb {
+		t.Errorf("get_link_graph has no ambiguous edge Amb.md -> x/Dup.md: %s", text)
 	}
 	if desc := e.s.GetTool("get_link_graph").Tool.Description; !strings.Contains(desc, "Full graph; can be large on big vaults.") {
 		t.Errorf("get_link_graph description = %q", desc)
