@@ -451,3 +451,44 @@ func TestReadNoteSymlinkFlipAfterValidate(t *testing.T) {
 		t.Errorf("error leaks root: %q", err)
 	}
 }
+
+func TestGraphByName(t *testing.T) {
+	v := newTestVault(t)
+	writeRaw(t, v, "A.md", "see [[Deep Note]]")
+	writeRaw(t, v, "sub/Deep Note.md", "[[A]] mentions A")
+
+	byName, err := v.GetBacklinks("Deep Note")
+	if err != nil {
+		t.Fatal(err)
+	}
+	byPath, err := v.GetBacklinks("sub/Deep Note.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(froms(byName), ",") != strings.Join(froms(byPath), ",") || len(byPath) != 1 {
+		t.Errorf("GetBacklinks by name = %v, by path = %v", froms(byName), froms(byPath))
+	}
+	out, err := v.GetOutgoingLinks("deep note")
+	if err != nil || len(out) != 1 || out[0].To != "A.md" {
+		t.Errorf("GetOutgoingLinks(deep note) = %+v, %v", out, err)
+	}
+	m, err := v.GetLinkedMentions("Deep Note")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(m, ",") != "A.md" {
+		t.Errorf("GetLinkedMentions(Deep Note) = %v, want [A.md]", m)
+	}
+	m, err = v.GetLinkedMentions("a")
+	if err != nil || strings.Join(m, ",") != "sub/Deep Note.md" {
+		t.Errorf("GetLinkedMentions(a) = %v, %v", m, err)
+	}
+	if _, err := v.GetFrontmatter("Deep Note"); err != nil {
+		t.Errorf("GetFrontmatter(Deep Note): %v", err)
+	}
+	writeRaw(t, v, "x/Dup.md", "")
+	writeRaw(t, v, "y/Dup.md", "")
+	if _, err := v.GetBacklinks("Dup"); err == nil || !strings.HasPrefix(err.Error(), "ambiguous note name") {
+		t.Errorf("GetBacklinks(Dup) err = %v, want ambiguous", err)
+	}
+}

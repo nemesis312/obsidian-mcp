@@ -6,13 +6,23 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
-// notFoundError reports a missing note by the caller's argument. It wraps
-// fs.ErrNotExist so errors.Is keeps working (the link index relies on it).
-type notFoundError struct{ arg string }
+// notFoundError reports a missing note by the caller's argument, with the
+// closest note paths when there are any. It wraps fs.ErrNotExist so
+// errors.Is keeps working (the link index relies on it).
+type notFoundError struct {
+	arg         string
+	suggestions []string
+}
 
-func (e *notFoundError) Error() string { return "note not found: " + e.arg }
+func (e *notFoundError) Error() string {
+	if len(e.suggestions) == 0 {
+		return "note not found: " + e.arg
+	}
+	return "note not found: " + e.arg + "; did you mean: " + strings.Join(e.suggestions, ", ") + "?"
+}
 func (e *notFoundError) Unwrap() error { return fs.ErrNotExist }
 
 // fsError maps an error from a file system call made for arg to one that

@@ -403,9 +403,14 @@ func (v *Vault) SearchVault(query string) ([]string, error) {
 	return matches, nil
 }
 
-// GetFrontmatter extracts frontmatter from a note
-func (v *Vault) GetFrontmatter(path string) (map[string]interface{}, error) {
-	content, err := v.ReadNote(path)
+// GetFrontmatter extracts frontmatter from the note arg addresses (see
+// AddressNote).
+func (v *Vault) GetFrontmatter(arg string) (map[string]interface{}, error) {
+	rel, err := v.AddressNote(arg)
+	if err != nil {
+		return nil, err
+	}
+	content, err := v.ReadNote(rel)
 	if err != nil {
 		return nil, err
 	}
