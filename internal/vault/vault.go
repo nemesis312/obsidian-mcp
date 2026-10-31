@@ -12,7 +12,10 @@ import (
 // Vault represents an Obsidian vault with secure file operations
 type Vault struct {
 	root     string
+	rawRoot  string // absolute root as given, before resolving symlinks
 	security *SecurityLayer
+	// guard serializes writes to this vault across goroutines and processes.
+	guard *writeGuard
 
 	// The link index is built lazily on the first graph call. idx is nil
 	// until a Build succeeds; writers update it only once it exists. idxMu
@@ -34,7 +37,9 @@ func New(root string) (*Vault, error) {
 
 	return &Vault{
 		root:     resolved,
+		rawRoot:  absRoot,
 		security: NewSecurityLayer(resolved),
+		guard:    newWriteGuard(resolved, defaultLockTimeout),
 	}, nil
 }
 

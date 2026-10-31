@@ -78,7 +78,7 @@ func TestVaultWriteUpdatesIndex(t *testing.T) {
 	if _, err := v.GetOutgoingLinks("A.md"); err != nil {
 		t.Fatal(err) // builds the index
 	}
-	if err := v.AppendToNote("A.md", "[[New]]"); err != nil {
+	if _, err := v.AppendToNote("A.md", "[[New]]", ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := v.CreateNote("New.md", "hi", nil); err != nil {
@@ -104,11 +104,11 @@ func TestWritesUpdateIndexByNormalizedPath(t *testing.T) {
 	if ix == nil {
 		t.Fatal("index not built")
 	}
-	if err := v.WriteNote("./sub/../c.md", "1"); err != nil {
+	if err := v.writeNote("./sub/../c.md", "1"); err != nil {
 		t.Fatal(err)
 	}
 	if c, ok := ix.Canonical("c"); !ok || c != "c.md" {
-		t.Errorf("after WriteNote Canonical(c) = %q, %v", c, ok)
+		t.Errorf("after writeNote Canonical(c) = %q, %v", c, ok)
 	}
 	if _, err := v.CreateNote("d/e", "x", nil); err != nil {
 		t.Fatal(err)
@@ -116,7 +116,7 @@ func TestWritesUpdateIndexByNormalizedPath(t *testing.T) {
 	if c, ok := ix.Canonical("d/e"); !ok || c != "d/e.md" {
 		t.Errorf("after CreateNote Canonical(d/e) = %q, %v", c, ok)
 	}
-	if err := v.DeleteNote("./sub/../c"); err != nil {
+	if _, err := v.DeleteNote("./sub/../c", VersionOf([]byte("1"))); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := ix.Canonical("c"); ok {
@@ -401,7 +401,7 @@ func TestUppercaseMDIsANote(t *testing.T) {
 		t.Fatalf("outgoing = %+v, want note edge to X.MD", out)
 	}
 	// A write through the vault and the next Refresh agree on the kind.
-	if err := v.WriteNote("X.MD", "changed"); err != nil {
+	if err := v.writeNote("X.MD", "changed"); err != nil {
 		t.Fatal(err)
 	}
 	out, err = v.GetOutgoingLinks("A.md")
@@ -449,5 +449,46 @@ func TestReadNoteSymlinkFlipAfterValidate(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), v.Root()) {
 		t.Errorf("error leaks root: %q", err)
+	}
+}
+
+func TestGraphByName(t *testing.T) {
+	v := newTestVault(t)
+	writeRaw(t, v, "A.md", "see [[Deep Note]]")
+	writeRaw(t, v, "sub/Deep Note.md", "[[A]] mentions A")
+
+	byName, err := v.GetBacklinks("Deep Note")
+	if err != nil {
+		t.Fatal(err)
+	}
+	byPath, err := v.GetBacklinks("sub/Deep Note.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(froms(byName), ",") != strings.Join(froms(byPath), ",") || len(byPath) != 1 {
+		t.Errorf("GetBacklinks by name = %v, by path = %v", froms(byName), froms(byPath))
+	}
+	out, err := v.GetOutgoingLinks("deep note")
+	if err != nil || len(out) != 1 || out[0].To != "A.md" {
+		t.Errorf("GetOutgoingLinks(deep note) = %+v, %v", out, err)
+	}
+	m, err := v.GetLinkedMentions("Deep Note")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(m, ",") != "A.md" {
+		t.Errorf("GetLinkedMentions(Deep Note) = %v, want [A.md]", m)
+	}
+	m, err = v.GetLinkedMentions("a")
+	if err != nil || strings.Join(m, ",") != "sub/Deep Note.md" {
+		t.Errorf("GetLinkedMentions(a) = %v, %v", m, err)
+	}
+	if _, err := v.GetFrontmatter("Deep Note"); err != nil {
+		t.Errorf("GetFrontmatter(Deep Note): %v", err)
+	}
+	writeRaw(t, v, "x/Dup.md", "")
+	writeRaw(t, v, "y/Dup.md", "")
+	if _, err := v.GetBacklinks("Dup"); err == nil || !strings.HasPrefix(err.Error(), "ambiguous note name") {
+		t.Errorf("GetBacklinks(Dup) err = %v, want ambiguous", err)
 	}
 }

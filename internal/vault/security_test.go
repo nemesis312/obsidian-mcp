@@ -277,3 +277,68 @@ func TestValidatePath_WindowsUNCAndVolumes(t *testing.T) {
 		}
 	}
 }
+
+// Windows strips a trailing "." or space from a name, so ".git." and
+// ".obsidian-mcp " reach the protected folder there. They are blocked on
+// every OS.
+func TestHasProtectedSegmentTrailingDotSpace(t *testing.T) {
+	for _, rel := range []string{
+		".git.", ".obsidian-mcp ", ".obsidian. .", filepath.Join("sub", ".GIT. ", "x.md"),
+		filepath.Join(".obsidian-mcp.", "x.md"),
+	} {
+		if !hasProtectedSegment(rel) {
+			t.Errorf("hasProtectedSegment(%q) = false, want true", rel)
+		}
+	}
+	for _, rel := range []string{".github", ".gitx.", "my.git", "notes.", "..."} {
+		if hasProtectedSegment(rel) {
+			t.Errorf("hasProtectedSegment(%q) = true, want false", rel)
+		}
+	}
+}
+
+// The Windows-only lexical segment check: ':' (alternate data streams), a
+// trailing "." or space, and an 8.3 short-name alias of a protected folder
+// (GIT~n, OBSIDI~n, leading dots allowed). Portable: the check is lexical.
+func TestWindowsUnsafeSegment(t *testing.T) {
+	for _, rel := range []string{
+		filepath.Join(".git::$INDEX_ALLOCATION", "x.md"), "a.md:stream", filepath.Join("dir.", "x.md"),
+		"x.md ", filepath.Join("OBSIDI~1", "x.md"), filepath.Join("GIT~1", "x.md"),
+		filepath.Join("sub", "obsidi~12", "x.md"), filepath.Join(".GIT~1", "x.md"), ".Obsidi~3",
+	} {
+		if !hasWindowsUnsafeSegment(rel) {
+			t.Errorf("hasWindowsUnsafeSegment(%q) = false, want true", rel)
+		}
+	}
+	for _, rel := range []string{".", "x.md", filepath.Join("a b", "c.d.md"), "tilde~x.md", "~.md", "v1.2 notes.md",
+		"draft~2.md", filepath.Join("v~1", "x.md"), "GIT~1.md", "GITX~1", "OBSIDIAN~1", "GIT~", "GIT~1a",
+	} {
+		if hasWindowsUnsafeSegment(rel) {
+			t.Errorf("hasWindowsUnsafeSegment(%q) = true, want false", rel)
+		}
+	}
+}
+
+// On Windows, ValidatePath rejects those segments before any filesystem call.
+func TestValidatePath_WindowsUnsafeSegments(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows only")
+	}
+	sec := NewSecurityLayer(tempRoot(t))
+	for _, p := range []string{`.obsidian-mcp.\x.md`, `.git.\x.md`, `.obsidian \x.md`, `.git::$INDEX_ALLOCATION\x.md`, `OBSIDI~1\x.md`, `GIT~1\x.md`, `a.md:s`} {
+		if _, err := sec.ValidatePath(p); err == nil || !strings.Contains(err.Error(), "path_violation") {
+			t.Errorf("%q: err = %v, want path_violation", p, err)
+		}
+	}
+}
+
+// A "~<digit>" name that is not a protected folder's short name passes
+// lexical validation on every OS.
+func TestValidatePath_TildeDigitNameAllowed(t *testing.T) {
+	sec := NewSecurityLayer(tempRoot(t))
+	for _, p := range []string{"draft~2.md", filepath.Join("v~1", "x.md")} {
+		if _, err := sec.ValidatePath(p); err != nil {
+			t.Errorf("%q: err = %v, want nil", p, err)
+		}
+	}
+}

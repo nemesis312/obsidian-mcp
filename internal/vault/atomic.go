@@ -53,7 +53,7 @@ func writeFileAtomic(target string, data []byte) error {
 	if err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, target); err != nil {
+	if err := renameReplace(tmp, target); err != nil {
 		os.Remove(tmp)
 		return err
 	}

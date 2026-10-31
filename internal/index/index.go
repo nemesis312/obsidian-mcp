@@ -604,3 +604,41 @@ func sortEdges(edges []Edge) {
 }
 
 func slash(p string) string { return strings.ReplaceAll(p, `\`, "/") }
+
+// addressSource is the note a target passed to Address is resolved from:
+// one at the vault root, so the same-folder rule means the root.
+const addressSource = "_address.md"
+
+// Address resolves target as a [[target]] written in a note at the vault root,
+// without refreshing. An attachment-only match is returned as Unresolved.
+// An Ambiguous result has no Path: addressing never applies the tie-break.
+// Its Candidates are every match, sorted.
+func (ix *Index) Address(target string) links.Resolution {
+	if strings.TrimSpace(target) == "" {
+		return links.Resolution{Status: links.Unresolved}
+	}
+	ix.mu.RLock()
+	res := ix.resolver.Resolve(addressSource, links.Ref{Kind: links.KindWikilink, Target: target})
+	ix.mu.RUnlock()
+	switch {
+	case res.Attachment || res.Status == links.Unresolved:
+		return links.Resolution{Status: links.Unresolved}
+	case res.Status == links.Ambiguous:
+		cands := append([]string(nil), res.Candidates...)
+		sort.Strings(cands)
+		return links.Resolution{Status: links.Ambiguous, Candidates: cands}
+	}
+	return links.Resolution{Status: links.Resolved, Path: res.Path}
+}
+
+// NotePaths returns every indexed note path, sorted, without refreshing.
+func (ix *Index) NotePaths() []string {
+	ix.mu.RLock()
+	out := make([]string, 0, len(ix.notes))
+	for p := range ix.notes {
+		out = append(out, p)
+	}
+	ix.mu.RUnlock()
+	sort.Strings(out)
+	return out
+}

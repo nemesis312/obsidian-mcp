@@ -110,7 +110,7 @@ func registerRenameTag(s *server.MCPServer, v *vault.Vault) {
 			return mcp.NewToolResultError(fmt.Sprintf("invalid new_tag: %v", err)), nil
 		}
 
-		res, err := v.RenameTag(oldTag, newTag)
+		res, err := v.RenameTagContext(ctx, oldTag, newTag)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("failed to rename tag: %v", err)), nil
 		}

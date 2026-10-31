@@ -2,7 +2,6 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/nemesis312/obsidian-mcp/internal/vault"
@@ -20,6 +19,28 @@ func RegisterWriteTools(s *server.MCPServer, v *vault.Vault) {
 	registerDeleteNote(s, v)
 }
 
+// expectedVersion reads the optional expected_version argument.
+func expectedVersion(request mcp.CallToolRequest) (string, error) {
+	raw, ok := request.GetArguments()["expected_version"]
+	if !ok || raw == nil {
+		return "", nil
+	}
+	str, ok := raw.(string)
+	if !ok {
+		return "", fmt.Errorf("expected_version must be a string")
+	}
+	return str, nil
+}
+
+// writeResult is the result of a write that leaves a note behind.
+func writeResult(snap vault.NoteSnapshot) *mcp.CallToolResult {
+	return jsonResult(struct {
+		Success bool   `json:"success"`
+		Path    string `json:"path"`
+		Version string `json:"version"`
+	}{true, snap.Path, snap.Version})
+}
+
 // create_note - Create a new note
 func registerCreateNote(s *server.MCPServer, v *vault.Vault) {
 	s.AddTool(mcp.Tool{
@@ -30,7 +51,7 @@ func registerCreateNote(s *server.MCPServer, v *vault.Vault) {
 			Properties: map[string]interface{}{
 				"path": map[string]interface{}{
 					"type":        "string",
-					"description": "Path for the new note (e.g., 'folder/note.md')",
+					"description": "Path for the new note (with or without .md), e.g. 'folder/note.md'. A leading \"/\" means the vault root.",
 				},
 				"content": map[string]interface{}{
 					"type":        "string",
@@ -60,19 +81,11 @@ func registerCreateNote(s *server.MCPServer, v *vault.Vault) {
 		}
 
 		// Single, exclusive write: fails if the note already exists.
-		notePath, err := v.CreateNote(path, content, fm)
+		snap, err := v.CreateNote(path, content, fm)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("failed to create note: %v", err)), nil
 		}
-		path = notePath
-
-		path, _ = vault.NormalizeNotePath(path) // report the path actually written
-		data, _ := json.MarshalIndent(map[string]interface{}{
-			"success": true,
-			"path":    path,
-		}, "", "  ")
-
-		return mcp.NewToolResultText(string(data)), nil
+		return writeResult(snap), nil
 	})
 }
 
@@ -80,17 +93,21 @@ func registerCreateNote(s *server.MCPServer, v *vault.Vault) {
 func registerAppendToNote(s *server.MCPServer, v *vault.Vault) {
 	s.AddTool(mcp.Tool{
 		Name:        "append_to_note",
-		Description: "Append content to the end of an existing note",
+		Description: "Append content to the end of an existing note. expected_version is optional.",
 		InputSchema: mcp.ToolInputSchema{
 			Type: "object",
 			Properties: map[string]interface{}{
 				"path": map[string]interface{}{
 					"type":        "string",
-					"description": "Path to the note",
+					"description": notePathDesc,
 				},
 				"content": map[string]interface{}{
 					"type":        "string",
 					"description": "Content to append",
+				},
+				"expected_version": map[string]interface{}{
+					"type":        "string",
+					"description": "Version from get_note. Optional: if given and the note changed since, the write is refused with the current version.",
 				},
 			},
 			Required: []string{"path", "content"},
@@ -106,17 +123,16 @@ func registerAppendToNote(s *server.MCPServer, v *vault.Vault) {
 			return mcp.NewToolResultError(fmt.Sprintf("invalid content: %v", err)), nil
 		}
 
-		if err := v.AppendToNote(path, content); err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("failed to append: %v", err)), nil
+		expected, err := expectedVersion(request)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
 		}
 
-		path, _ = vault.NormalizeNotePath(path) // report the path actually written
-		data, _ := json.MarshalIndent(map[string]interface{}{
-			"success": true,
-			"path":    path,
-		}, "", "  ")
-
-		return mcp.NewToolResultText(string(data)), nil
+		snap, err := v.AppendToNote(path, content, expected)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("failed to append: %v", err)), nil
+		}
+		return writeResult(snap), nil
 	})
 }
 
@@ -124,20 +140,24 @@ func registerAppendToNote(s *server.MCPServer, v *vault.Vault) {
 func registerPatchNote(s *server.MCPServer, v *vault.Vault) {
 	s.AddTool(mcp.Tool{
 		Name:        "patch_note",
-		Description: "Update a note by completely replacing its content",
+		Description: "Replace a note's whole content. Requires expected_version (the \"version\" from get_note); refused with the current version if the note changed.",
 		InputSchema: mcp.ToolInputSchema{
 			Type: "object",
 			Properties: map[string]interface{}{
 				"path": map[string]interface{}{
 					"type":        "string",
-					"description": "Path to the note",
+					"description": notePathDesc,
 				},
 				"content": map[string]interface{}{
 					"type":        "string",
 					"description": "New content for the note",
 				},
+				"expected_version": map[string]interface{}{
+					"type":        "string",
+					"description": "Required. The \"version\" from get_note; the call is refused with the current version if the note changed.",
+				},
 			},
-			Required: []string{"path", "content"},
+			Required: []string{"path", "content", "expected_version"},
 		},
 	}, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		path, err := request.RequireString("path")
@@ -150,17 +170,16 @@ func registerPatchNote(s *server.MCPServer, v *vault.Vault) {
 			return mcp.NewToolResultError(fmt.Sprintf("invalid content: %v", err)), nil
 		}
 
-		if err := v.WriteNote(path, content); err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("failed to patch note: %v", err)), nil
+		expected, err := expectedVersion(request)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
 		}
 
-		path, _ = vault.NormalizeNotePath(path) // report the path actually written
-		data, _ := json.MarshalIndent(map[string]interface{}{
-			"success": true,
-			"path":    path,
-		}, "", "  ")
-
-		return mcp.NewToolResultText(string(data)), nil
+		snap, err := v.ReplaceNote(path, content, expected)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("failed to patch note: %v", err)), nil
+		}
+		return writeResult(snap), nil
 	})
 }
 
@@ -168,17 +187,21 @@ func registerPatchNote(s *server.MCPServer, v *vault.Vault) {
 func registerUpdateFrontmatter(s *server.MCPServer, v *vault.Vault) {
 	s.AddTool(mcp.Tool{
 		Name:        "update_frontmatter",
-		Description: "Update frontmatter fields in a note (preserves body)",
+		Description: "Update frontmatter fields in a note (preserves body). expected_version is optional.",
 		InputSchema: mcp.ToolInputSchema{
 			Type: "object",
 			Properties: map[string]interface{}{
 				"path": map[string]interface{}{
 					"type":        "string",
-					"description": "Path to the note",
+					"description": notePathDesc,
 				},
 				"updates": map[string]interface{}{
 					"type":        "object",
 					"description": "Frontmatter fields to update (null to delete)",
+				},
+				"expected_version": map[string]interface{}{
+					"type":        "string",
+					"description": "Version from get_note. Optional: if given and the note changed since, the write is refused with the current version.",
 				},
 			},
 			Required: []string{"path", "updates"},
@@ -195,17 +218,16 @@ func registerUpdateFrontmatter(s *server.MCPServer, v *vault.Vault) {
 			return mcp.NewToolResultError("updates must be an object"), nil
 		}
 
-		if err := v.UpdateFrontmatter(path, updates); err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("failed to update frontmatter: %v", err)), nil
+		expected, err := expectedVersion(request)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
 		}
 
-		path, _ = vault.NormalizeNotePath(path) // report the path actually written
-		data, _ := json.MarshalIndent(map[string]interface{}{
-			"success": true,
-			"path":    path,
-		}, "", "  ")
-
-		return mcp.NewToolResultText(string(data)), nil
+		snap, err := v.UpdateFrontmatter(path, updates, expected)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("failed to update frontmatter: %v", err)), nil
+		}
+		return writeResult(snap), nil
 	})
 }
 
@@ -213,16 +235,20 @@ func registerUpdateFrontmatter(s *server.MCPServer, v *vault.Vault) {
 func registerDeleteNote(s *server.MCPServer, v *vault.Vault) {
 	s.AddTool(mcp.Tool{
 		Name:        "delete_note",
-		Description: "Delete a note from the vault",
+		Description: "Delete a note from the vault. Requires expected_version (the \"version\" from get_note); refused with the current version if the note changed.",
 		InputSchema: mcp.ToolInputSchema{
 			Type: "object",
 			Properties: map[string]interface{}{
 				"path": map[string]interface{}{
 					"type":        "string",
-					"description": "Path to the note to delete",
+					"description": notePathDesc,
+				},
+				"expected_version": map[string]interface{}{
+					"type":        "string",
+					"description": "Required. The \"version\" from get_note; the call is refused with the current version if the note changed.",
 				},
 			},
-			Required: []string{"path"},
+			Required: []string{"path", "expected_version"},
 		},
 	}, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		path, err := request.RequireString("path")
@@ -230,16 +256,18 @@ func registerDeleteNote(s *server.MCPServer, v *vault.Vault) {
 			return mcp.NewToolResultError(fmt.Sprintf("invalid path: %v", err)), nil
 		}
 
-		if err := v.DeleteNote(path); err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("failed to delete note: %v", err)), nil
+		expected, err := expectedVersion(request)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
 		}
 
-		path, _ = vault.NormalizeNotePath(path) // report the path actually written
-		data, _ := json.MarshalIndent(map[string]interface{}{
-			"success": true,
-			"path":    path,
-		}, "", "  ")
-
-		return mcp.NewToolResultText(string(data)), nil
+		path, err = v.DeleteNote(path, expected)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("failed to delete note: %v", err)), nil
+		}
+		return jsonResult(struct {
+			Success bool   `json:"success"`
+			Path    string `json:"path"`
+		}{true, path}), nil
 	})
 }

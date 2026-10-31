@@ -1,11 +1,15 @@
 package vault
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func put(t *testing.T, v *Vault, rel, content string) {
@@ -144,5 +148,54 @@ func TestRenameTag_SymlinkToNonMarkdownReported(t *testing.T) {
 	}
 	if got := get(t, v, "Scripts/tp_user.js"); got != "#a // js" {
 		t.Errorf("js modified: %q", got)
+	}
+}
+
+// Once the guard is busy, rename_tag stops waiting for it: every remaining
+// tagged note is reported failed with the same reason, in well under the
+// 20 × timeout that waiting on each note would take.
+func TestRenameTag_StopsAfterBusy(t *testing.T) {
+	v := newTestVault(t)
+	for i := 0; i < 20; i++ {
+		put(t, v, fmt.Sprintf("n%02d.md", i), "#a body\n")
+	}
+	put(t, v, "untagged.md", "no tag\n")
+	v.guard = newWriteGuard(v.root, 100*time.Millisecond)
+	unlock, err := v.guard.lock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+
+	start := time.Now()
+	res, err := v.RenameTag("a", "b")
+	if d := time.Since(start); d > time.Second {
+		t.Errorf("RenameTag took %v, want < 1s", d)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Renamed) != 0 || len(res.Failed) != 20 {
+		t.Fatalf("renamed %d, failed %d; want 0 and 20: %+v", len(res.Renamed), len(res.Failed), res.Failed)
+	}
+	for _, f := range res.Failed {
+		if f.Path == "untagged.md" || !strings.Contains(f.Error, "vault is busy") {
+			t.Errorf("failure %+v, want a tagged note and vault is busy", f)
+		}
+	}
+}
+
+// A cancelled request stops rename_tag before it touches another note.
+func TestRenameTag_HonoursContext(t *testing.T) {
+	v := newTestVault(t)
+	put(t, v, "n.md", "#a body\n")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := v.RenameTagContext(ctx, "a", "b")
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want context.Canceled", err)
+	}
+	if got := get(t, v, "n.md"); got != "#a body\n" {
+		t.Errorf("n.md changed after cancel: %q", got)
 	}
 }

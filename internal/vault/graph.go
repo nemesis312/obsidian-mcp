@@ -1,9 +1,7 @@
 package vault
 
 import (
-	"errors"
 	"path"
-	"path/filepath"
 	"strings"
 
 	"github.com/nemesis312/obsidian-mcp/internal/index"
@@ -28,67 +26,65 @@ func (v *Vault) linkIndex() (*index.Index, error) {
 	return ix, nil
 }
 
-// lookupKey turns a note path argument into the form the index matches on:
-// "/" separators and lexically cleaned ("./a.md" -> "a.md"). It never touches
-// the file system; a path that escapes the vault ("../x") simply matches no
-// note.
-func lookupKey(arg string) string {
-	return path.Clean(strings.ReplaceAll(arg, `\`, "/"))
-}
-
-func errNoteNotFound(arg string) error {
-	return errors.New("note not found: " + arg)
-}
-
-// notePathErr maps an index lookup error to the public error: "note not
-// found: <arg>" when arg names no indexed note, otherwise the index error
-// (a refresh failure, which carries vault-relative paths only).
-func notePathErr(ix *index.Index, arg, key string, err error) error {
-	if _, ok := ix.Canonical(key); !ok {
-		return errNoteNotFound(arg)
+// graphErr maps an index query error for rel, the addressed path of arg,
+// to the public error: "note not found: <arg>" when rel is not an indexed
+// note (an addressed note in a hidden folder), otherwise the index error (a
+// refresh failure, which carries vault-relative paths only).
+func graphErr(ix *index.Index, arg, rel string, err error) error {
+	if _, ok := ix.Canonical(rel); !ok {
+		return &notFoundError{arg: arg}
 	}
 	return err
 }
 
-// NotePath returns the canonical vault-relative path of the indexed note
-// matching arg, without refreshing the index. It is meant to label the
-// result of a graph call that just refreshed it.
-func (v *Vault) NotePath(arg string) (string, bool) {
-	ix := v.idx.Load()
-	if ix == nil {
-		return "", false
-	}
-	return ix.Canonical(lookupKey(arg))
+// GetBacklinks returns the edges from other notes to the note arg
+// addresses (see AddressNote), sorted by source note.
+func (v *Vault) GetBacklinks(arg string) ([]index.Edge, error) {
+	_, edges, err := v.NoteBacklinks(arg)
+	return edges, err
 }
 
-// GetBacklinks returns the edges from other notes to the given note, sorted
-// by source note.
-func (v *Vault) GetBacklinks(path string) ([]index.Edge, error) {
+// NoteBacklinks is GetBacklinks that also returns the path arg addressed,
+// the note the edges belong to, for labelling the result.
+func (v *Vault) NoteBacklinks(arg string) (string, []index.Edge, error) {
+	rel, err := v.AddressNote(arg)
+	if err != nil {
+		return "", nil, err
+	}
 	ix, err := v.linkIndex()
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
-	key := lookupKey(path)
-	edges, err := ix.Backlinks(key)
+	edges, err := ix.Backlinks(rel)
 	if err != nil {
-		return nil, notePathErr(ix, path, key, err)
+		return "", nil, graphErr(ix, arg, rel, err)
 	}
-	return edges, nil
+	return rel, edges, nil
 }
 
-// GetOutgoingLinks returns the deduped links of the given note, in source
-// order. Unresolved targets are ghost edges.
-func (v *Vault) GetOutgoingLinks(path string) ([]index.Edge, error) {
+// GetOutgoingLinks returns the deduped links of the note arg addresses (see
+// AddressNote), in source order. Unresolved targets are ghost edges.
+func (v *Vault) GetOutgoingLinks(arg string) ([]index.Edge, error) {
+	_, edges, err := v.NoteOutgoingLinks(arg)
+	return edges, err
+}
+
+// NoteOutgoingLinks is GetOutgoingLinks that also returns the path arg
+// addressed, the note the edges belong to, for labelling the result.
+func (v *Vault) NoteOutgoingLinks(arg string) (string, []index.Edge, error) {
+	rel, err := v.AddressNote(arg)
+	if err != nil {
+		return "", nil, err
+	}
 	ix, err := v.linkIndex()
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
-	key := lookupKey(path)
-	edges, err := ix.Outgoing(key)
+	edges, err := ix.Outgoing(rel)
 	if err != nil {
-		return nil, notePathErr(ix, path, key, err)
+		return "", nil, graphErr(ix, arg, rel, err)
 	}
-	return edges, nil
+	return rel, edges, nil
 }
 
 // GetOrphanedNotes returns the sorted notes with no outgoing links and no
@@ -118,14 +114,25 @@ func (v *Vault) BuildLinkGraph() ([]index.GraphNode, []index.Edge, error) {
 	return nodes, edges, nil
 }
 
-// GetLinkedMentions returns notes that mention the target note name in text (not as wikilink)
-func (v *Vault) GetLinkedMentions(path string) ([]string, error) {
-	targetName := strings.TrimSuffix(filepath.Base(path), ".md")
-	self := filepath.ToSlash(path)
+// GetLinkedMentions returns notes that mention the name of the note arg
+// addresses (see AddressNote) in text (not as wikilink)
+func (v *Vault) GetLinkedMentions(arg string) ([]string, error) {
+	_, mentions, err := v.NoteLinkedMentions(arg)
+	return mentions, err
+}
+
+// NoteLinkedMentions is GetLinkedMentions that also returns the path arg
+// addressed, for labelling the result.
+func (v *Vault) NoteLinkedMentions(arg string) (string, []string, error) {
+	self, err := v.AddressNote(arg)
+	if err != nil {
+		return "", nil, err
+	}
+	targetName := strings.TrimSuffix(path.Base(self), ".md")
 
 	files, err := v.ListFiles()
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
 
 	var mentions []string
@@ -146,5 +153,5 @@ func (v *Vault) GetLinkedMentions(path string) ([]string, error) {
 		}
 	}
 
-	return mentions, nil
+	return self, mentions, nil
 }
