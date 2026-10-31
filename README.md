@@ -112,7 +112,7 @@ Links are resolved the way Obsidian does it; see [How links are resolved](#how-l
 | `get_orphaned_notes` | `{"orphans": ["lonely.md"], "count": 1}`. Sorted. |
 | `get_link_graph` | `{"nodes": [{"id": "a.md", "kind": "note"}], "edges": [{"from": "a.md", "to": "b.md", "to_kind": "note", "kind": "wikilink", "ambiguous": false}], "node_count": 1, "edge_count": 1}`. |
 
-`kind` is `wikilink`, `embed` or `markdown`. `to_kind` is `note`, `attachment` or `ghost`. A ghost is a link whose target does not exist; its `to` is the normalized target text, lowercase and NFC-normalized (see rule 7). `ambiguous` is `true` when several files match the target (a shared basename, or paths that differ only in case) and the one reported was picked by the tie-break rules. The graph has a node for every note, every linked attachment and every ghost, sorted by kind and then id; edges are sorted by `from`, `to_kind` and `to`.
+`kind` is `wikilink`, `embed` or `markdown`. `to_kind` is `note`, `attachment` or `ghost`. A ghost is a link whose target does not exist; its `to` is the normalized target text, lowercase and NFC-normalized (see rule 8). `ambiguous` is `true` when several files match the target (a shared name or path suffix, or paths that differ only in case) and the one reported was picked by the tie-break rules. The graph has a node for every note, every linked attachment and every ghost, sorted by kind and then id; edges are sorted by `from`, `to_kind` and `to`.
 
 ### Tag/Canvas Tools (5)
 
@@ -124,17 +124,18 @@ Links are resolved the way Obsidian does it; see [How links are resolved](#how-l
 
 ## How links are resolved
 
-The link index follows Obsidian's rules. It reads wikilinks (`[[Note]]`), embeds (`![[Note]]`) and markdown links (`[text](Note.md)`), in the body and in the frontmatter. Links inside fenced code and inline code are ignored, and so are external URLs (`https://...`) and markdown same-note anchors (`[text](#heading)`).
+The link index follows Obsidian's rules. It reads wikilinks (`[[Note]]`), embeds (`![[Note]]`) and markdown links (`[text](Note.md)`), in the body and in the frontmatter. Links inside fenced code and inline code are ignored, and so are external URLs (`https://...`). The rules below apply the same way to all three kinds.
 
-1. **Target text.** A wikilink target is split at `#` (heading), `#^` (block) and `|` (alias). `\|` also works, for tables. Markdown targets may be wrapped in `<...>` and percent-encoded (`My%20Note.md`). A link with only a heading, such as `[[#Section]]`, points to the note it is in.
+1. **Target text.** A wikilink target is split at `#` (heading), `#^` (block) and `|` (alias). `\|` also works, for tables. Markdown targets may be wrapped in `<...>` and percent-encoded (`My%20Note.md`).
 2. **Case and Unicode.** Matching ignores case and Unicode normalization (NFC). For notes, `.md` is optional and matches in any case (`[[Note.MD]]`).
-3. **Markdown links** (not starting with `/`) are tried relative to the folder of the note first, then like a wikilink. `./` and `../` work. A target that climbs out of the vault is unresolved.
-4. **Targets with a `/`** are paths from the vault root (a leading `/` is allowed). Suffixes of a path are not matched.
-5. **Targets without a `/`** match the file name anywhere in the vault. Notes are tried before attachments. A target is an attachment only when it has an extension other than `.md` (`pic.png`, `doc.pdf`).
-6. **Duplicate names.** When several notes share a name, the winner is: the one in the same folder as the source note, then the one with the fewest path segments, then the first in alphabetical order of the lowercase path. The edge is marked `ambiguous`. Paths that differ only in case or Unicode form (`Note.md` and `note.md`) are never picked silently: the link is `ambiguous`, and the reported path is the alphabetically first in byte order. Use a path (`[[b/c/Dup]]`) to pick one on purpose.
-7. **No match** gives a ghost: the edge is kept, pointing to the target as it was matched, lowercase and NFC-normalized, with surrounding spaces, `./`, a leading `/` and a trailing `.md` removed and the path cleaned. `[[Ghost]]`, `[[ghost]]`, `[[Ghost.md]]`, `[[./Ghost]]` and `[g](Ghost.md)` are the same ghost, `ghost`. A target that is only `/` or `./` names nothing and gives no edge.
+3. **Only a heading or block** (`[[#Section]]`, `[text](#section)`) points to the note the link is in.
+4. **`./` and `../`** make the target relative to the folder of the note, and only there: there is no fallback to the rest of the vault. A target that climbs out of the vault is unresolved.
+5. **A leading `/`** makes the target an exact path from the vault root.
+6. **An exact path from the vault root wins.** Otherwise, any file whose path ends with the target, by whole folders, matches: `[[c/Dup]]` finds `b/c/Dup.md`, and `[[Dup]]` finds every `Dup.md`. This holds for markdown links too: `[text](Peer.md)` written in `md/` goes to a root `Peer.md` before `md/Peer.md`. Notes are tried before attachments. A target is an attachment only when it has an extension other than `.md` (`pic.png`, `doc.pdf`).
+7. **Several matches.** The winner is the one in the same folder as the source note, then the one with the fewest path segments, then the first in alphabetical order of the lowercase path. The edge is marked `ambiguous`. Paths that differ only in case or Unicode form (`Note.md` and `note.md`) are never picked silently: the link is `ambiguous`, and the reported path is the alphabetically first in byte order. Use a longer path (`[[b/c/Dup]]`) to pick one on purpose.
+8. **No match** gives a ghost: the edge is kept, pointing to the target as it was matched, lowercase and NFC-normalized, with surrounding spaces, `./`, a leading `/` and a trailing `.md` removed and the path cleaned. `[[Ghost]]`, `[[ghost]]`, `[[Ghost.md]]`, `[[./Ghost]]` and `[g](Ghost.md)` are the same ghost, `ghost`, even when `[[./Ghost]]` is written in another folder. A target that is only `/` or `./` names nothing and gives no edge.
 
-Each note keeps one edge per target, whatever the number of links to it or the ways it is spelled (`[[Note]]`, `[[./ ./note]]`). The fixture vault in `internal/index/testdata/linkvault` has one note per case, with the expected edges in its README. These rules are unverified against the Obsidian app itself.
+Each note keeps one edge per target, whatever the number of links to it or the ways it is spelled (`[[Note]]`, `[[a/../note]]`; `[[./Note]]` and `[[././note]]`). The fixture vault in `internal/index/testdata/linkvault` has one note per case, with the expected edges in its README. These rules were checked against the Obsidian app's metadata cache (`app.metadataCache.resolvedLinks`) on 2026-10-31.
 
 The index skips hidden files and folders (`.obsidian`, `.git`), subfolders it lacks permission to read or search, and `.md` entries that are not regular files (FIFOs, sockets, devices); it never reads one through a symlink either. A vault root it cannot read fails the index build.
 
