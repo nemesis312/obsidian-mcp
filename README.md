@@ -132,9 +132,11 @@ The link index follows Obsidian's rules. It reads wikilinks (`[[Note]]`), embeds
 4. **Targets with a `/`** are paths from the vault root (a leading `/` is allowed). Suffixes of a path are not matched.
 5. **Targets without a `/`** match the file name anywhere in the vault. Notes are tried before attachments. A target is an attachment only when it has an extension other than `.md` (`pic.png`, `doc.pdf`).
 6. **Duplicate names.** When several notes share a name, the winner is: the one in the same folder as the source note, then the one with the fewest path segments, then the first in alphabetical order of the lowercase path. The edge is marked `ambiguous`. Paths that differ only in case or Unicode form (`Note.md` and `note.md`) are never picked silently: the link is `ambiguous`, and the reported path is the alphabetically first in byte order. Use a path (`[[b/c/Dup]]`) to pick one on purpose.
-7. **No match** gives a ghost: the edge is kept, pointing to the target as it was matched, lowercase and NFC-normalized, with surrounding spaces, `./`, a leading `/` and a trailing `.md` removed and the path cleaned. `[[Ghost]]`, `[[ghost]]`, `[[Ghost.md]]`, `[[./Ghost]]` and `[g](Ghost.md)` are the same ghost, `ghost`.
+7. **No match** gives a ghost: the edge is kept, pointing to the target as it was matched, lowercase and NFC-normalized, with surrounding spaces, `./`, a leading `/` and a trailing `.md` removed and the path cleaned. `[[Ghost]]`, `[[ghost]]`, `[[Ghost.md]]`, `[[./Ghost]]` and `[g](Ghost.md)` are the same ghost, `ghost`. A target that is only `/` or `./` names nothing and gives no edge.
 
-Each note keeps one edge per target, whatever the number of links to it. The fixture vault in `internal/index/testdata/linkvault` has one note per case, with the expected edges in its README. These rules are unverified against the Obsidian app itself.
+Each note keeps one edge per target, whatever the number of links to it or the ways it is spelled (`[[Note]]`, `[[./ ./note]]`). The fixture vault in `internal/index/testdata/linkvault` has one note per case, with the expected edges in its README. These rules are unverified against the Obsidian app itself.
+
+The index skips hidden files and folders (`.obsidian`, `.git`), subfolders it lacks permission to read or search, and `.md` entries that are not regular files (FIFOs, sockets, devices); it never reads one through a symlink either. A vault root it cannot read fails the index build.
 
 ## Examples
 
