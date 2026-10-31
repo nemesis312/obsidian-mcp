@@ -237,8 +237,9 @@ func baseName(p string) string {
 }
 
 // boundedLevenshtein returns the edit distance of a and b when it is at most
-// k. It only fills the diagonal band of width 2k+1, so it costs
-// O(len(a)·k), and it gives up at once when the lengths differ by more than k.
+// k. It only fills, and resets, the diagonal band of width 2k+1 plus one cell
+// on each side, so it costs O(len(a)·k) after O(len(b)) setup, and it gives
+// up at once when the lengths differ by more than k.
 func boundedLevenshtein(a, b []rune, k int) (int, bool) {
 	if d := len(a) - len(b); d > k || -d > k {
 		return 0, false
@@ -255,13 +256,18 @@ func boundedLevenshtein(a, b []rune, k int) (int, bool) {
 	}
 	for i := 1; i <= len(a); i++ {
 		lo, hi := max(1, i-k), min(len(b), i+k)
-		for j := range cur {
-			cur[j] = inf
+		// Only the band is written below. The cell left of it is read in
+		// this row and the cell right of it in the next, so both are reset;
+		// the rest of cur is never read.
+		cur[lo-1] = inf
+		if hi+1 <= len(b) {
+			cur[hi+1] = inf
 		}
+		best := inf
 		if i <= k {
 			cur[0] = i
+			best = i
 		}
-		best := cur[0]
 		for j := lo; j <= hi; j++ {
 			cost := 1
 			if a[i-1] == b[j-1] {

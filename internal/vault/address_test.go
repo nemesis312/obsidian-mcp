@@ -3,6 +3,7 @@ package vault
 import (
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -136,5 +137,85 @@ func TestSuggestBounds(t *testing.T) {
 	_ = suggest(q, notes, 5)
 	if d := time.Since(start); d > time.Second {
 		t.Errorf("suggest took %v, want < 1s", d)
+	}
+}
+
+// Close names never end the band early, so this measures the per-row cost:
+// it must be O(k) per row, not O(len(name)).
+func TestSuggestBandCost(t *testing.T) {
+	q := strings.Repeat("a", 128)
+	notes := make([]string, 20000)
+	for i := range notes {
+		// 124 shared runes and 4 others: distance 4, just over the limit of 3.
+		notes[i] = fmt.Sprintf("d%d/%s%04d.md", i%100, strings.Repeat("a", 124), i%10000)
+	}
+	start := time.Now()
+	_ = suggest(q, notes, 5)
+	if d := time.Since(start); d > time.Second {
+		t.Errorf("suggest took %v, want < 1s", d)
+	}
+}
+
+// The band reset keeps the results of the full computation.
+func TestBoundedLevenshtein(t *testing.T) {
+	cases := []struct {
+		a, b string
+		k    int
+		d    int
+		ok   bool
+	}{
+		{"kitten", "sitting", 3, 3, true},
+		{"kitten", "sitting", 2, 0, false},
+		{"abc", "abc", 0, 0, true},
+		{"", "ab", 2, 2, true},
+		{"ab", "", 1, 0, false},
+		{"abcdef", "azcdxf", 3, 2, true},
+		{"aaaa", "bbbb", 3, 0, false},
+		{"flaw", "lawn", 2, 2, true},
+	}
+	for _, c := range cases {
+		d, ok := boundedLevenshtein([]rune(c.a), []rune(c.b), c.k)
+		if ok != c.ok || ok && d != c.d {
+			t.Errorf("boundedLevenshtein(%q,%q,%d) = %d,%v; want %d,%v", c.a, c.b, c.k, d, ok, c.d, c.ok)
+		}
+	}
+}
+
+// Randomized check of the band against the full dynamic program.
+func TestBoundedLevenshteinMatchesFull(t *testing.T) {
+	full := func(a, b []rune) int {
+		prev := make([]int, len(b)+1)
+		for j := range prev {
+			prev[j] = j
+		}
+		for i := 1; i <= len(a); i++ {
+			cur := make([]int, len(b)+1)
+			cur[0] = i
+			for j := 1; j <= len(b); j++ {
+				c := prev[j-1]
+				if a[i-1] != b[j-1] {
+					c++
+				}
+				cur[j] = min(c, prev[j]+1, cur[j-1]+1)
+			}
+			prev = cur
+		}
+		return prev[len(b)]
+	}
+	rnd := rand.New(rand.NewPCG(1, 2))
+	word := func() []rune {
+		r := make([]rune, rnd.IntN(12))
+		for i := range r {
+			r[i] = rune('a' + rnd.IntN(3))
+		}
+		return r
+	}
+	for n := 0; n < 20000; n++ {
+		a, b, k := word(), word(), rnd.IntN(5)
+		want := full(a, b)
+		d, ok := boundedLevenshtein(a, b, k)
+		if ok != (want <= k) || ok && d != want {
+			t.Fatalf("boundedLevenshtein(%q,%q,%d) = %d,%v; full distance %d", string(a), string(b), k, d, ok, want)
+		}
 	}
 }
