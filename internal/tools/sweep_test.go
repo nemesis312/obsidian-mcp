@@ -1,6 +1,8 @@
 package tools_test
 
 import (
+	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -17,7 +19,11 @@ var sweepTools = []string{
 }
 
 // No tool result, success or error, may contain an absolute vault path in any
-// spelling, whatever hostile value any string argument receives.
+// spelling, or the content of a file outside the vault, whatever hostile
+// value any string argument receives. Every tool is also called with no
+// arguments, so tools that take none are swept too. Each call runs in its own
+// subtest, named after the tool, the argument and the hostile value's index,
+// and a leak report prints the full arguments.
 func TestNoToolOutputContainsAbsolutePath(t *testing.T) {
 	probe := newEnv(t)
 	var got []string
@@ -29,8 +35,42 @@ func TestNoToolOutputContainsAbsolutePath(t *testing.T) {
 		t.Fatalf("tool set changed: update the sweep.\n got %v\nwant %v", got, sweepTools)
 	}
 
+	calls := map[string]int{}
+	okResults := 0 // non-error results with non-empty text
+
+	// sweep calls name in a fresh seeded vault with the arguments args
+	// builds from that vault's root, and reports whether the result was a
+	// non-error with non-empty text.
+	sweep := func(t *testing.T, name string, args func(root string) map[string]any) bool {
+		t.Helper()
+		e := newEnv(t)
+		seedSweepVault(t, e, filepath.Join(t.TempDir(), "outside.md"))
+		a := args(e.root)
+		text, isErr := e.call(name, a)
+		calls[name]++
+		ok := !isErr && text != ""
+		if ok {
+			okResults++
+		}
+		for _, bad := range forbidden(e.root) {
+			if strings.Contains(text, bad) {
+				t.Errorf("%s(%q) leaks %q: %s", name, a, bad, text)
+				break
+			}
+		}
+		return ok
+	}
+
 	for _, name := range sweepTools {
 		schema := probe.s.GetTool(name).Tool.InputSchema
+
+		t.Run(name+"/no-args", func(t *testing.T) {
+			ok := sweep(t, name, func(string) map[string]any { return map[string]any{} })
+			if len(schema.Required) == 0 && !ok {
+				t.Errorf("%s() takes no required argument but gave an error or an empty result", name)
+			}
+		})
+
 		var props []string
 		for p, def := range schema.Properties {
 			if m, ok := def.(map[string]any); ok && m["type"] == "string" {
@@ -39,41 +79,51 @@ func TestNoToolOutputContainsAbsolutePath(t *testing.T) {
 		}
 		sort.Strings(props)
 		for _, prop := range props {
-			for _, hostile := range hostileValues(t) {
-				e := newEnv(t)
-				outside := filepath.Join(t.TempDir(), "outside.md")
-				seedSweepVault(t, e, outside)
-				args := map[string]any{}
-				for _, req := range schema.Required {
-					def, _ := schema.Properties[req].(map[string]any)
-					switch {
-					case def["type"] == "object":
-						args[req] = map[string]any{"k": "v"}
-					case strings.Contains(req, "version"):
-						args[req] = "sha256:0000000000000000"
-					default:
-						args[req] = "x"
-					}
-				}
-				if _, ok := schema.Properties["expected_version"]; ok {
-					args["expected_version"] = "sha256:0000000000000000"
-				}
-				val := hostile(e.root)
-				args[prop] = val
-				text, _ := e.call(name, args)
-				for _, bad := range forbidden(e.root) {
-					if strings.Contains(text, bad) {
-						t.Errorf("%s(%s=%q) leaks %q: %s", name, prop, val, bad, text)
-						break
-					}
-				}
+			for i, hostile := range hostileValues(t) {
+				t.Run(fmt.Sprintf("%s/%s/%d", name, prop, i), func(t *testing.T) {
+					sweep(t, name, func(root string) map[string]any {
+						args := map[string]any{}
+						for _, req := range schema.Required {
+							def, _ := schema.Properties[req].(map[string]any)
+							switch {
+							case def["type"] == "object":
+								args[req] = map[string]any{"k": "v"}
+							case strings.Contains(req, "version"):
+								args[req] = "sha256:0000000000000000"
+							default:
+								args[req] = "x"
+							}
+						}
+						if _, ok := schema.Properties["expected_version"]; ok {
+							args["expected_version"] = "sha256:0000000000000000"
+						}
+						args[prop] = hostile(root)
+						return args
+					})
+				})
 			}
 		}
 	}
+
+	if f := flag.Lookup("test.run"); f != nil && strings.Contains(f.Value.String(), "/") {
+		return // subtests filtered: the counts are partial
+	}
+	for _, name := range sweepTools {
+		if calls[name] == 0 {
+			t.Errorf("%s was never called", name)
+		}
+	}
+	if okResults == 0 {
+		t.Error("no call returned a non-error, non-empty result: the sweep proves nothing")
+	}
 }
 
+// sweepSecret is the content of the file outside the vault that out.md
+// links to; no tool may ever return it.
+const sweepSecret = "secret"
+
 func forbidden(root string) []string {
-	out := []string{root, filepath.ToSlash(root), filepath.Dir(root)}
+	out := []string{root, filepath.ToSlash(root), filepath.Dir(root), sweepSecret}
 	if raw := rawSpelling(root); raw != root {
 		out = append(out, raw, filepath.ToSlash(raw), filepath.Dir(raw))
 	}
@@ -104,6 +154,10 @@ func hostileValues(t *testing.T) []func(root string) string {
 		func(string) string { return "out.md" },
 		func(string) string { return "Dup" },
 		func(string) string { return "a\x00.md" },
+		func(string) string { return ".obsidian-mcp/write.lock" },
+		func(string) string { return ".OBSIDIAN-MCP/x.md" },
+		func(string) string { return ".obsidian-mcp./x.md" },
+		func(string) string { return "/C:/x.md" },
 	}
 }
 
@@ -116,7 +170,7 @@ func seedSweepVault(t *testing.T, e *env, outside string) {
 	if err := os.MkdirAll(filepath.Join(e.root, "dir.md"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(outside, []byte("secret"), 0o644); err != nil {
+	if err := os.WriteFile(outside, []byte(sweepSecret), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(outside, filepath.Join(e.root, "out.md")); err != nil {
