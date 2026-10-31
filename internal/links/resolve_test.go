@@ -100,3 +100,22 @@ func TestKey(t *testing.T) {
 		t.Fatalf("Key must NFC-normalize and lowercase, got %q", links.Key("Café"))
 	}
 }
+
+func TestResolveCaseOnlyDuplicates(t *testing.T) {
+	r := links.NewResolver([]string{"k/Same.md", "K/SAME.md", "k/same.md", "m/Q.md", "M/q.md"}, []string{"i/A.PNG", "I/a.png"})
+	for _, tc := range []struct{ from, target, want string }{
+		{"z.md", "Same", "K/SAME.md"},
+		{"z.md", "k/same", "K/SAME.md"},
+		{"z.md", "q", "M/q.md"},
+	} {
+		got := r.Resolve(tc.from, links.Ref{Kind: links.KindWikilink, Target: tc.target})
+		want := links.Resolution{Status: links.Resolved, Path: tc.want}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("Resolve(%q) = %+v, want %+v", tc.target, got, want)
+		}
+	}
+	got := r.Resolve("z.md", links.Ref{Kind: links.KindEmbed, Target: "a.png"})
+	if want := (links.Resolution{Status: links.Resolved, Path: "I/a.png", Attachment: true}); !reflect.DeepEqual(got, want) {
+		t.Errorf("attachment = %+v, want %+v", got, want)
+	}
+}

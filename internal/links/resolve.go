@@ -49,15 +49,29 @@ func NewResolver(notes, attachments []string) *Resolver {
 
 func newFileSet(paths []string, notes bool) fileSet {
 	fs := fileSet{byPath: map[string]string{}, byBase: map[string][]string{}}
+	keys := make(map[string]string, len(paths)) // path -> its path key
 	for _, p := range paths {
-		pk, bk := p, path.Base(p)
+		pk := p
 		if notes {
-			pk, bk = trimMD(pk), trimMD(bk)
+			pk = trimMD(pk)
 		}
-		pk, bk = Key(pk), Key(bk)
+		pk = Key(pk)
+		keys[p] = pk
 		if old, ok := fs.byPath[pk]; !ok || p < old {
 			fs.byPath[pk] = p
 		}
+	}
+	// Only the path chosen for each key enters the basename index, so
+	// case-only duplicates never make a basename ambiguous.
+	for p, pk := range keys {
+		if fs.byPath[pk] != p {
+			continue
+		}
+		bk := path.Base(p)
+		if notes {
+			bk = trimMD(bk)
+		}
+		bk = Key(bk)
 		fs.byBase[bk] = append(fs.byBase[bk], p)
 	}
 	for k, list := range fs.byBase {
