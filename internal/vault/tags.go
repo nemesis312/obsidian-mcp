@@ -1,6 +1,7 @@
 package vault
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
@@ -106,10 +107,20 @@ type RenameResult struct {
 	Failed  []RenameFailure `json:"failed"`
 }
 
-// RenameTag renames a tag (and its nested children, a -> new, a/b -> new/b)
-// across all notes. Both names are validated; per-note errors are collected in
-// the result instead of aborting or being silently dropped.
+// RenameTag is RenameTagContext without cancellation.
 func (v *Vault) RenameTag(oldTag, newTag string) (RenameResult, error) {
+	return v.RenameTagContext(context.Background(), oldTag, newTag)
+}
+
+// RenameTagContext renames a tag (and its nested children, a -> new, a/b ->
+// new/b) across all notes. Both names are validated; per-note errors are
+// collected in the result instead of aborting or being silently dropped.
+//
+// Its time is bounded: once the write guard is busy (ErrBusy), it stops
+// waiting for it and reports every remaining note that has the tag as failed
+// with the same reason. It checks ctx before each note and, once ctx is
+// done, returns the result so far with an error wrapping ctx.Err().
+func (v *Vault) RenameTagContext(ctx context.Context, oldTag, newTag string) (RenameResult, error) {
 	res := RenameResult{Renamed: []string{}, Failed: []RenameFailure{}}
 
 	if err := v.rejectAbsoluteTag(oldTag); err != nil {
@@ -137,7 +148,11 @@ func (v *Vault) RenameTag(oldTag, newTag string) (RenameResult, error) {
 
 	renamer := markdown.NewTagRenamer(oldTag, newTag) // compiled patterns are shared; built once per rename
 
+	var busy error // the first ErrBusy; no more locks are tried after it
 	for _, file := range files {
+		if err := ctx.Err(); err != nil {
+			return res, fmt.Errorf("stopped after renaming %d notes: %w", len(res.Renamed), err)
+		}
 		// An unlocked read skips notes without the tag; a note that has it
 		// is re-read, rewritten and written under the guard, which is held
 		// for that one note only.
@@ -153,8 +168,15 @@ func (v *Vault) RenameTag(oldTag, newTag string) (RenameResult, error) {
 			continue
 		}
 
+		if busy != nil {
+			res.Failed = append(res.Failed, RenameFailure{Path: file, Error: busy.Error()})
+			continue
+		}
 		written, err := v.renameTagInNote(renamer, file)
 		if err != nil {
+			if errors.Is(err, ErrBusy) {
+				busy = err
+			}
 			res.Failed = append(res.Failed, RenameFailure{Path: file, Error: err.Error()})
 			continue
 		}
