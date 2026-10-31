@@ -152,6 +152,10 @@ func scanWikilinks(s string, fn func(start, end int, embed bool, inner string)) 
 			pos = j + 2
 			continue
 		}
+		if j == i+2 && j < len(s) && s[j] == '[' {
+			pos = i + 1 // "[[[": a match may start at the second '['
+			continue
+		}
 		pos = j
 	}
 }
@@ -160,6 +164,7 @@ func scanWikilinks(s string, fn func(start, end int, embed bool, inner string)) 
 // dest is returned as written, angle brackets included.
 func scanMarkdownLinks(s string, fn func(start, end int, text, dest string)) {
 	pos := 0
+	var memo destMemo
 	for pos < len(s) {
 		k := strings.Index(s[pos:], "](")
 		if k < 0 {
@@ -174,7 +179,7 @@ func scanMarkdownLinks(s string, fn func(start, end int, text, dest string)) {
 		open := strings.IndexByte(s[segStart:mid], '[')
 		dest, end := "", 0
 		if open >= 0 {
-			dest, end = linkDest(s, mid+2)
+			dest, end = memo.parse(s, mid+2)
 		}
 		if end == 0 {
 			pos = mid + 1
@@ -190,10 +195,18 @@ func scanMarkdownLinks(s string, fn func(start, end int, text, dest string)) {
 	}
 }
 
-// linkDest parses the destination starting at s[d] and returns it with the
+// destMemo remembers how far failed destination scans got. Destinations are
+// parsed at increasing offsets, and a scan that failed at byte e fails the same
+// way from any later start before e, so those are rejected without rescanning.
+type destMemo struct {
+	angleEnd int // a failed '<' scan stopped here
+	plainEnd int // a failed plain scan ran into whitespace or EOF here
+}
+
+// parse parses the destination starting at s[d] and returns it with the
 // offset just past the closing ')'. end is 0 when there is no valid one.
-func linkDest(s string, d int) (dest string, end int) {
-	if d < len(s) && s[d] == '<' {
+func (m *destMemo) parse(s string, d int) (dest string, end int) {
+	if d < len(s) && s[d] == '<' && d >= m.angleEnd {
 		e := d + 1
 		for e < len(s) && s[e] != '>' && s[e] != '\n' {
 			e++
@@ -201,6 +214,10 @@ func linkDest(s string, d int) (dest string, end int) {
 		if e > d+1 && e+1 < len(s) && s[e] == '>' && s[e+1] == ')' {
 			return s[d : e+1], e + 2
 		}
+		m.angleEnd = e
+	}
+	if d < m.plainEnd {
+		return "", 0
 	}
 	e := d
 	for e < len(s) && s[e] != ')' && !isSpace(s[e]) {
@@ -208,6 +225,9 @@ func linkDest(s string, d int) (dest string, end int) {
 	}
 	if e > d && e < len(s) && s[e] == ')' {
 		return s[d:e], e + 1
+	}
+	if e == len(s) || s[e] != ')' {
+		m.plainEnd = e
 	}
 	return "", 0
 }

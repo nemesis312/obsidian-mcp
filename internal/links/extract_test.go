@@ -41,6 +41,9 @@ func TestExtract(t *testing.T) {
 		{"fenced code", "```\n[[InCode]]\n```\n", nil},
 		{"trimmed", "[[ Note ]]", []links.Ref{{Kind: links.KindWikilink, Raw: "[[ Note ]]", Target: "Note"}}},
 		{"empty", "[[]]", nil},
+		{"extra bracket", "[[[a]]", []links.Ref{{Kind: links.KindWikilink, Raw: "[[a]]", Target: "a", Offset: 1}}},
+		{"extra bracket embed", "![[[a]]", []links.Ref{{Kind: links.KindWikilink, Raw: "[[a]]", Target: "a", Offset: 2}}},
+		{"extra brackets after text", "x[[[[a]]", []links.Ref{{Kind: links.KindWikilink, Raw: "[[a]]", Target: "a", Offset: 3}}},
 		{"same note heading", "[[#H]]", []links.Ref{{Kind: links.KindWikilink, Raw: "[[#H]]", Heading: "H"}}},
 		{"source order", "[a](A.md) [[B]] ![[C]]", []links.Ref{
 			{Kind: links.KindMarkdown, Raw: "[a](A.md)", Target: "A.md", Alias: "a"},
@@ -66,6 +69,8 @@ func TestExtractRobust(t *testing.T) {
 		want []string
 	}{
 		{"10MB unclosed", strings.Repeat("[[", 5<<20), nil},
+		{"unclosed md dest", strings.Repeat("[a](x", 2<<20), nil},
+		{"unclosed md angle dest", strings.Repeat("[a](<x", 2<<20), nil},
 		{"unclosed fence", "```\n[[A]]\n[[B]]", nil},
 		{"invalid utf8", "\xff[[A]]", []string{"A"}},
 	}
