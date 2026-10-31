@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -48,8 +49,15 @@ func (s *SecurityLayer) ValidatePath(targetPath string) (string, error) {
 
 	// 2. Lexical containment BEFORE any filesystem call, so paths outside the
 	// vault (UNC shares, other volumes, "..") are never stat'ed or resolved.
-	if !s.lexicallyInside(absPath) {
+	lexRel, ok := s.lexicalRel(absPath)
+	if !ok {
 		return "", errOutside
+	}
+	// 2b. Windows name forms that alias another name (trailing "." or space,
+	// "::$INDEX_ALLOCATION" streams, 8.3 short names) are refused before any
+	// filesystem call, so they can never reach a protected folder.
+	if checkWindowsNames && hasWindowsUnsafeSegment(lexRel) {
+		return "", errWindowsName
 	}
 
 	// 3. Resolve symlinks (deepest existing ancestor for paths that don't exist
@@ -78,33 +86,63 @@ func (s *SecurityLayer) ValidatePath(targetPath string) (string, error) {
 var (
 	errOutside = errors.New("path_violation: path is outside the vault")
 	errInvalid = errors.New("path_violation: invalid path")
+	// errWindowsName rejects a segment Windows would read as another name.
+	errWindowsName = errors.New(`path_violation: name not allowed (a ':', a trailing '.' or space, or an 8.3 short name like "NAME~1")`)
 )
+
+// checkWindowsNames enables hasWindowsUnsafeSegment in ValidatePath.
+var checkWindowsNames = runtime.GOOS == "windows"
 
 func relInside(rel string) bool {
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
-// lexicallyInside reports whether abs lies under the root (resolved or as
-// given) using string operations only. UNC paths and other volumes are rejected.
-func (s *SecurityLayer) lexicallyInside(abs string) bool {
+// lexicalRel returns abs relative to the root (resolved or as given) when
+// it lies under it, using string operations only. UNC paths and other
+// volumes are rejected.
+func (s *SecurityLayer) lexicalRel(abs string) (string, bool) {
 	if strings.HasPrefix(abs, `\\`) || strings.HasPrefix(abs, "//") {
-		return false // UNC / device paths; never touch them
+		return "", false // UNC / device paths; never touch them
 	}
 	for _, root := range []string{s.root, s.rawRoot} {
 		if !strings.EqualFold(filepath.VolumeName(abs), filepath.VolumeName(root)) {
 			continue
 		}
 		if rel, err := filepath.Rel(root, abs); err == nil && relInside(rel) {
-			return true
+			return rel, true
+		}
+	}
+	return "", false
+}
+
+// hasProtectedSegment reports whether a segment of rel names a protected
+// folder, ignoring case and any trailing dots and spaces (which Windows
+// strips, so ".git." is ".git" there). It does so on every OS.
+func hasProtectedSegment(rel string) bool {
+	for _, seg := range strings.Split(rel, string(filepath.Separator)) {
+		trimmed := strings.TrimRight(seg, ". ")
+		for _, p := range protectedSegments {
+			if strings.EqualFold(seg, p) || strings.EqualFold(trimmed, p) { // case-insensitive filesystems
+				return true
+			}
 		}
 	}
 	return false
 }
 
-func hasProtectedSegment(rel string) bool {
+// hasWindowsUnsafeSegment reports whether a segment of rel (other than ".")
+// contains ':', ends in '.' or space, or has the 8.3 short-name form, a '~'
+// followed by a digit. Windows reads each of these as another name.
+func hasWindowsUnsafeSegment(rel string) bool {
 	for _, seg := range strings.Split(rel, string(filepath.Separator)) {
-		for _, p := range protectedSegments {
-			if strings.EqualFold(seg, p) { // case-insensitive filesystems
+		if seg == "" || seg == "." {
+			continue
+		}
+		if strings.ContainsRune(seg, ':') || strings.HasSuffix(seg, ".") || strings.HasSuffix(seg, " ") {
+			return true
+		}
+		for i := 0; i+1 < len(seg); i++ {
+			if seg[i] == '~' && seg[i+1] >= '0' && seg[i+1] <= '9' {
 				return true
 			}
 		}

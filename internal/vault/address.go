@@ -76,7 +76,12 @@ func (v *Vault) relArg(arg string) (string, error) {
 			}
 		}
 	}
-	return strings.TrimLeft(s, "/"), nil
+	t := strings.TrimLeft(s, "/")
+	// "/C:/x.md" strips to "C:/x.md": check again (Windows only; a no-op elsewhere).
+	if filepath.VolumeName(t) != "" || filepath.IsAbs(t) {
+		return "", ErrAbsolutePath
+	}
+	return t, nil
 }
 
 // AddressNote returns the vault-relative "/" path of the existing note arg

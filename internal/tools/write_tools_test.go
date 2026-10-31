@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -274,6 +275,29 @@ func TestRenameTag(t *testing.T) {
 	for _, bad := range []string{"", "#", "has space", "a#b"} {
 		if _, isErr := e.call("rename_tag", map[string]any{"old_tag": "fresh", "new_tag": bad}); !isErr {
 			t.Errorf("new_tag %q must be rejected", bad)
+		}
+	}
+}
+
+// Windows strips a trailing "." or space, resolves 8.3 short names and
+// treats "::$INDEX_ALLOCATION" as the folder itself, so each of these paths
+// would land in a protected folder. All are refused, and nothing is created.
+func TestCreateNoteWindowsNameForms(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows only")
+	}
+	for _, p := range []string{".obsidian-mcp./x.md", ".git./x.md", ".obsidian ./x.md", ".git::$INDEX_ALLOCATION/x.md", "OBSIDI~1/x.md"} {
+		e := newEnv(t)
+		out, isErr := e.call("create_note", map[string]any{"path": p, "content": "x"})
+		if !isErr || !strings.Contains(out, "path_violation") {
+			t.Errorf("create_note(%q) = %q, isErr=%v; want path_violation", p, out, isErr)
+		}
+		entries, err := os.ReadDir(e.root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) != 0 {
+			t.Errorf("create_note(%q) created %v", p, entries)
 		}
 	}
 }

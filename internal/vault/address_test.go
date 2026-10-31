@@ -69,7 +69,7 @@ func TestAddressNote(t *testing.T) {
 
 	abs := []string{filepath.Join(v.Root(), "v1.2 notes.md"), v.Root()}
 	if runtime.GOOS == "windows" {
-		abs = append(abs, `C:\x.md`, `\\srv\share\x.md`, `//srv/share/x.md`, `C:x.md`)
+		abs = append(abs, `C:\x.md`, `\\srv\share\x.md`, `//srv/share/x.md`, `C:x.md`, "/"+filepath.ToSlash(v.Root())+"/v1.2 notes.md", `/C:/x.md`)
 	}
 	for _, in := range abs {
 		if _, err := v.AddressNote(in); !errors.Is(err, ErrAbsolutePath) {
