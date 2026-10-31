@@ -179,30 +179,6 @@ func TestCreateNote_RejectsNonMarkdownAndProtected(t *testing.T) {
 	}
 }
 
-func TestWriteNote_InvalidatesCacheByNormalizedPath(t *testing.T) {
-	v := newTestVault(t)
-	if err := v.WriteNote("c.md", "1"); err != nil {
-		t.Fatal(err)
-	}
-	key := filepath.Join(v.Root(), "c.md")
-	v.cache.Set(key, "stale")
-	// raw caller input differs from the cache key (relative, no-op segments)
-	if err := v.WriteNote("./sub/../c.md", "2"); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := v.cache.Get(key); ok {
-		t.Error("cache entry for normalized path was not invalidated by WriteNote")
-	}
-
-	v.cache.Set(key, "stale")
-	if err := v.DeleteNote("./sub/../c"); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := v.cache.Get(key); ok {
-		t.Error("cache entry for normalized path was not invalidated by DeleteNote")
-	}
-}
-
 func TestAppendAndUpdateFrontmatter_NoExtension(t *testing.T) {
 	v := newTestVault(t)
 	if err := v.WriteNote("n", "line"); err != nil {

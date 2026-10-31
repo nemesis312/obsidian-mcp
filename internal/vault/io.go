@@ -1,75 +1,115 @@
 package vault
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/nemesis312/obsidian-mcp/internal/index"
 	"github.com/nemesis312/obsidian-mcp/internal/markdown"
 )
 
-// ListFiles returns all markdown files in the vault
-func (v *Vault) ListFiles() ([]string, error) {
-	var files []string
+var _ index.Source = (*Vault)(nil)
 
-	err := filepath.Walk(v.root, func(path string, info os.FileInfo, err error) error {
+// walkVault walks the vault without following symlinks (info is from Lstat),
+// skipping every hidden file or directory, which covers .obsidian and .git.
+// fn gets each non-directory entry with its vault-relative "/" path. Walk
+// errors never contain the absolute vault root.
+func (v *Vault) walkVault(fn func(rel string, info os.FileInfo)) error {
+	return filepath.Walk(v.root, func(p string, info os.FileInfo, err error) error {
 		if err != nil {
-			return err
+			if p != v.root && errors.Is(err, fs.ErrNotExist) {
+				return nil // removed while walking
+			}
+			return v.walkError(p, err)
 		}
-
-		// Skip .obsidian directory
-		if info.IsDir() && info.Name() == ".obsidian" {
-			return filepath.SkipDir
+		if p == v.root {
+			return nil
 		}
-
-		// Skip hidden files/directories
 		if strings.HasPrefix(info.Name(), ".") {
 			if info.IsDir() {
 				return filepath.SkipDir
 			}
 			return nil
 		}
-
-		// Collect .md files
-		if !info.IsDir() && strings.HasSuffix(path, ".md") {
-			relPath, err := filepath.Rel(v.root, path)
-			if err != nil {
-				return err
-			}
-			files = append(files, relPath)
+		if info.IsDir() {
+			return nil
 		}
-
+		rel, err := filepath.Rel(v.root, p)
+		if err != nil || !relInside(rel) {
+			return v.walkError(p, errInvalid)
+		}
+		fn(filepath.ToSlash(rel), info)
 		return nil
 	})
+}
 
+// walkError reports a walk failure with a vault-relative path only.
+func (v *Vault) walkError(p string, err error) error {
+	rel, rerr := filepath.Rel(v.root, p)
+	if rerr != nil || !relInside(rel) {
+		rel = "."
+	}
+	var pe *fs.PathError
+	if errors.As(err, &pe) {
+		err = pe.Err
+	}
+	return fmt.Errorf("vault walk failed at %s: %w", filepath.ToSlash(rel), err)
+}
+
+func isNotePath(rel string) bool { return strings.HasSuffix(rel, ".md") }
+
+// ListFiles returns all markdown files in the vault, as vault-relative paths
+// using "/".
+func (v *Vault) ListFiles() ([]string, error) {
+	var files []string
+	err := v.walkVault(func(rel string, _ os.FileInfo) {
+		if isNotePath(rel) {
+			files = append(files, rel)
+		}
+	})
 	return files, err
 }
 
-// ListCanvases returns all .canvas files in the vault
+// StatNotes implements index.Source: the same set as ListFiles, with stat data.
+// Size and ModTime come from Lstat, so edits to the target of a symlinked
+// note are not detected until the link itself changes.
+func (v *Vault) StatNotes() ([]index.FileStat, error) {
+	var out []index.FileStat
+	err := v.walkVault(func(rel string, info os.FileInfo) {
+		if isNotePath(rel) {
+			out = append(out, index.FileStat{Path: rel, Size: info.Size(), ModTime: info.ModTime()})
+		}
+	})
+	return out, err
+}
+
+// StatAttachments implements index.Source: every regular file that is not a
+// note or a canvas. Symlinks are skipped entirely, so nothing outside the
+// vault is ever listed.
+func (v *Vault) StatAttachments() ([]index.FileStat, error) {
+	var out []index.FileStat
+	err := v.walkVault(func(rel string, info os.FileInfo) {
+		if !info.Mode().IsRegular() || isNotePath(rel) || strings.HasSuffix(rel, ".canvas") {
+			return
+		}
+		out = append(out, index.FileStat{Path: rel, Size: info.Size(), ModTime: info.ModTime()})
+	})
+	return out, err
+}
+
+// ListCanvases returns all .canvas files in the vault, as vault-relative
+// paths using "/".
 func (v *Vault) ListCanvases() ([]string, error) {
 	var canvases []string
-
-	err := filepath.Walk(v.root, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
+	err := v.walkVault(func(rel string, _ os.FileInfo) {
+		if strings.HasSuffix(rel, ".canvas") {
+			canvases = append(canvases, rel)
 		}
-
-		if info.IsDir() && (info.Name() == ".obsidian" || strings.HasPrefix(info.Name(), ".")) {
-			return filepath.SkipDir
-		}
-
-		if !info.IsDir() && strings.HasSuffix(path, ".canvas") {
-			relPath, err := filepath.Rel(v.root, path)
-			if err != nil {
-				return err
-			}
-			canvases = append(canvases, relPath)
-		}
-
-		return nil
 	})
-
 	return canvases, err
 }
 
@@ -126,15 +166,51 @@ func requireMarkdownTarget(resolved string) error {
 	return nil
 }
 
-func (v *Vault) invalidate(safePath string) {
-	if v.cache != nil {
-		v.cache.Invalidate(safePath)
+// noteRel returns the vault-relative "/" path of a validated note path. It
+// is lexical, so a symlinked note keeps its own path, as the walk lists it.
+func (v *Vault) noteRel(norm string) (string, bool) {
+	abs := norm
+	if !filepath.IsAbs(abs) {
+		abs = filepath.Join(v.root, norm)
+	}
+	rel, err := filepath.Rel(v.root, filepath.Clean(abs))
+	if err != nil || !relInside(rel) || rel == "." {
+		return "", false
+	}
+	return filepath.ToSlash(rel), true
+}
+
+// indexUpdate refreshes one note in the link index, if it was built. If it
+// was not, the lazy Build sees the write. An Update error is ignored: the
+// next Refresh heals it.
+func (v *Vault) indexUpdate(norm string) {
+	ix := v.idx.Load()
+	if ix == nil {
+		return
+	}
+	if rel, ok := v.noteRel(norm); ok {
+		_ = ix.Update(rel)
+	}
+}
+
+// indexRemove drops one note from the link index, if it was built.
+func (v *Vault) indexRemove(norm string) {
+	ix := v.idx.Load()
+	if ix == nil {
+		return
+	}
+	if rel, ok := v.noteRel(norm); ok {
+		ix.Remove(rel)
 	}
 }
 
 // WriteNote writes content to a note (creates or overwrites) atomically.
 func (v *Vault) WriteNote(path, content string) error {
-	safePath, err := v.resolveNote(path)
+	norm, err := NormalizeNotePath(path)
+	if err != nil {
+		return err
+	}
+	safePath, err := v.resolveNote(norm)
 	if err != nil {
 		return err
 	}
@@ -147,7 +223,7 @@ func (v *Vault) WriteNote(path, content string) error {
 		return fmt.Errorf("failed to write note: %w", err)
 	}
 
-	v.invalidate(safePath)
+	v.indexUpdate(norm)
 	return nil
 }
 
@@ -186,7 +262,7 @@ func (v *Vault) CreateNote(path, content string, frontmatter map[string]interfac
 		return "", err
 	}
 
-	v.invalidate(safePath)
+	v.indexUpdate(norm)
 	return norm, nil
 }
 
@@ -212,7 +288,11 @@ func (v *Vault) AppendToNote(path, content string) error {
 
 // DeleteNote removes a note from the vault
 func (v *Vault) DeleteNote(path string) error {
-	safePath, err := v.resolveNote(path)
+	norm, err := NormalizeNotePath(path)
+	if err != nil {
+		return err
+	}
+	safePath, err := v.resolveNote(norm)
 	if err != nil {
 		return err
 	}
@@ -225,7 +305,7 @@ func (v *Vault) DeleteNote(path string) error {
 		return fmt.Errorf("failed to delete note: %w", err)
 	}
 
-	v.invalidate(safePath)
+	v.indexRemove(norm)
 	return nil
 }
 
