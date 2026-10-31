@@ -10,7 +10,7 @@ import (
 )
 
 // protectedSegments are directory/file names that are never reachable, at any depth.
-var protectedSegments = []string{".git", ".obsidian"}
+var protectedSegments = []string{".git", ".obsidian", ".obsidian-mcp"}
 
 type SecurityLayer struct {
 	root    string // absolute vault root with symlinks resolved
@@ -29,7 +29,7 @@ func NewSecurityLayer(root string) *SecurityLayer {
 }
 
 // ValidatePath ensures target path is within the vault (after resolving symlinks)
-// and does not touch a protected segment (.git, .obsidian).
+// and does not touch a protected segment (.git, .obsidian, .obsidian-mcp).
 // Returns the resolved absolute path if valid, error otherwise.
 func (s *SecurityLayer) ValidatePath(targetPath string) (string, error) {
 	// 0. A volume name without an absolute path ("Z:x.md", Windows drive-relative)

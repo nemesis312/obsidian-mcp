@@ -13,6 +13,8 @@ import (
 type Vault struct {
 	root     string
 	security *SecurityLayer
+	// guard serializes writes to this vault across goroutines and processes.
+	guard *writeGuard
 
 	// The link index is built lazily on the first graph call. idx is nil
 	// until a Build succeeds; writers update it only once it exists. idxMu
@@ -35,6 +37,7 @@ func New(root string) (*Vault, error) {
 	return &Vault{
 		root:     resolved,
 		security: NewSecurityLayer(resolved),
+		guard:    newWriteGuard(resolved, defaultLockTimeout),
 	}, nil
 }
 
