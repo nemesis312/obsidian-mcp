@@ -128,29 +128,55 @@ func (v *Vault) RenameTag(oldTag, newTag string) (RenameResult, error) {
 	renamer := markdown.NewTagRenamer(oldTag, newTag) // compiled patterns are shared; built once per rename
 
 	for _, file := range files {
+		// An unlocked read skips notes without the tag; a note that has it
+		// is re-read, rewritten and written under the guard, which is held
+		// for that one note only.
 		content, err := v.ReadNote(file)
 		if err != nil {
 			res.Failed = append(res.Failed, RenameFailure{Path: file, Error: err.Error()})
 			continue
 		}
+		if _, changed, err := renamer.RenameNote(content); err != nil {
+			res.Failed = append(res.Failed, RenameFailure{Path: file, Error: err.Error()})
+			continue
+		} else if !changed {
+			continue
+		}
 
-		updated, changed, err := renamer.RenameNote(content)
+		written, err := v.renameTagInNote(renamer, file)
 		if err != nil {
 			res.Failed = append(res.Failed, RenameFailure{Path: file, Error: err.Error()})
 			continue
 		}
-		if !changed {
-			continue
+		if written {
+			v.indexUpdate(file)
+			res.Renamed = append(res.Renamed, file)
 		}
-
-		if err := v.WriteNote(file, updated); err != nil {
-			res.Failed = append(res.Failed, RenameFailure{Path: file, Error: err.Error()})
-			continue
-		}
-		res.Renamed = append(res.Renamed, file)
 	}
 
 	return res, nil
+}
+
+// renameTagInNote rewrites the tag in one note under the write guard,
+// re-reading it from disk first. It reports whether the note was written.
+func (v *Vault) renameTagInNote(renamer *markdown.TagRenamer, file string) (bool, error) {
+	unlock, err := v.guard.lock()
+	if err != nil {
+		return false, err
+	}
+	defer unlock()
+	content, err := v.ReadNote(file)
+	if err != nil {
+		return false, err
+	}
+	updated, changed, err := renamer.RenameNote(content)
+	if err != nil || !changed {
+		return false, err
+	}
+	if err := v.writeNoteLocked(file, updated); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // BuildTagIndex creates an index of all tags and their notes

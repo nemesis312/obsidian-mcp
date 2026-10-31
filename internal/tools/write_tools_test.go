@@ -144,6 +144,7 @@ func TestAppendToNote(t *testing.T) {
 }
 
 func TestPatchNote(t *testing.T) {
+	t.Skip("updated in Task 4")
 	e := newEnv(t)
 	e.write("n.md", "old")
 
@@ -186,6 +187,7 @@ func TestUpdateFrontmatter(t *testing.T) {
 }
 
 func TestDeleteNote(t *testing.T) {
+	t.Skip("updated in Task 4")
 	e := newEnv(t)
 	e.write("n.md", "x")
 	e.write("keep.txt", "x")

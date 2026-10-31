@@ -60,13 +60,11 @@ func registerCreateNote(s *server.MCPServer, v *vault.Vault) {
 		}
 
 		// Single, exclusive write: fails if the note already exists.
-		notePath, err := v.CreateNote(path, content, fm)
+		snap, err := v.CreateNote(path, content, fm)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("failed to create note: %v", err)), nil
 		}
-		path = notePath
-
-		path, _ = vault.NormalizeNotePath(path) // report the path actually written
+		path = snap.Path // report the path actually written
 		data, _ := json.MarshalIndent(map[string]interface{}{
 			"success": true,
 			"path":    path,
@@ -106,11 +104,11 @@ func registerAppendToNote(s *server.MCPServer, v *vault.Vault) {
 			return mcp.NewToolResultError(fmt.Sprintf("invalid content: %v", err)), nil
 		}
 
-		if err := v.AppendToNote(path, content); err != nil {
+		snap, err := v.AppendToNote(path, content, "") // expected_version: Task 4
+		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("failed to append: %v", err)), nil
 		}
-
-		path, _ = vault.NormalizeNotePath(path) // report the path actually written
+		path = snap.Path // report the path actually written
 		data, _ := json.MarshalIndent(map[string]interface{}{
 			"success": true,
 			"path":    path,
@@ -150,11 +148,11 @@ func registerPatchNote(s *server.MCPServer, v *vault.Vault) {
 			return mcp.NewToolResultError(fmt.Sprintf("invalid content: %v", err)), nil
 		}
 
-		if err := v.WriteNote(path, content); err != nil {
+		snap, err := v.ReplaceNote(path, content, "") // expected_version: Task 4
+		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("failed to patch note: %v", err)), nil
 		}
-
-		path, _ = vault.NormalizeNotePath(path) // report the path actually written
+		path = snap.Path // report the path actually written
 		data, _ := json.MarshalIndent(map[string]interface{}{
 			"success": true,
 			"path":    path,
@@ -195,11 +193,11 @@ func registerUpdateFrontmatter(s *server.MCPServer, v *vault.Vault) {
 			return mcp.NewToolResultError("updates must be an object"), nil
 		}
 
-		if err := v.UpdateFrontmatter(path, updates); err != nil {
+		snap, err := v.UpdateFrontmatter(path, updates, "") // expected_version: Task 4
+		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("failed to update frontmatter: %v", err)), nil
 		}
-
-		path, _ = vault.NormalizeNotePath(path) // report the path actually written
+		path = snap.Path // report the path actually written
 		data, _ := json.MarshalIndent(map[string]interface{}{
 			"success": true,
 			"path":    path,
@@ -230,11 +228,10 @@ func registerDeleteNote(s *server.MCPServer, v *vault.Vault) {
 			return mcp.NewToolResultError(fmt.Sprintf("invalid path: %v", err)), nil
 		}
 
-		if err := v.DeleteNote(path); err != nil {
+		path, err = v.DeleteNote(path, "") // expected_version: Task 4
+		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("failed to delete note: %v", err)), nil
 		}
-
-		path, _ = vault.NormalizeNotePath(path) // report the path actually written
 		data, _ := json.MarshalIndent(map[string]interface{}{
 			"success": true,
 			"path":    path,
