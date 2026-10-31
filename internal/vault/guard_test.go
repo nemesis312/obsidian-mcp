@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -369,5 +370,52 @@ func TestGuardFirstLockConcurrent(t *testing.T) {
 		for err := range errs {
 			t.Fatalf("round %d: first lock failed: %v", round, err)
 		}
+	}
+}
+
+// The lock folder and file are private to the vault's owner, so another
+// user cannot open the file and hold the lock.
+func TestGuardLockFilesArePrivate(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX modes only")
+	}
+	root := tempRoot(t)
+	unlock, err := newWriteGuard(root, time.Second).lock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	unlock()
+	for _, rel := range []string{lockDirName, filepath.Join(lockDirName, lockFileName)} {
+		fi, err := os.Lstat(filepath.Join(root, rel))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if perm := fi.Mode().Perm(); perm&0o077 != 0 {
+			t.Errorf("%s mode = %v, want no group or other bits", rel, perm)
+		}
+	}
+}
+
+// A write.lock symlink is refused before the open, so O_CREATE never
+// creates its target (here a plugin file Obsidian would run).
+func TestGuardLockFileSymlinkRefused(t *testing.T) {
+	root := tempRoot(t)
+	plugin := filepath.Join(root, ".obsidian", "plugins", "p")
+	if err := os.MkdirAll(plugin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, lockDirName), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	mustSymlink(t, "../.obsidian/plugins/p/main.js", filepath.Join(root, lockDirName, lockFileName))
+
+	unlock, err := newWriteGuard(root, 200*time.Millisecond).lock()
+	if err == nil {
+		unlock()
+		t.Fatal("lock opened a symlinked write.lock")
+	}
+	assertNoRoot(t, err, root)
+	if _, serr := os.Lstat(filepath.Join(plugin, "main.js")); !errors.Is(serr, os.ErrNotExist) {
+		t.Fatalf("the symlink target was created: %v", serr)
 	}
 }

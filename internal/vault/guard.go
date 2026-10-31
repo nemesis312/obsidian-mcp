@@ -102,7 +102,11 @@ func (g *writeGuard) lock() (unlock func(), err error) {
 // openLockFile creates (if needed) and opens the lock file through os.Root,
 // so no symlink or junction can redirect it outside the vault. The lock
 // directory must be a real directory, and the lock file a regular file, so
-// the lock never lands in (or opens) vault content either.
+// the lock never lands in (or opens) vault content either: an existing
+// write.lock that is not a regular file is refused before the open (which
+// would create a symlink's target), and the opened file must be the one
+// at write.lock. The directory is 0700 and the file 0600, so another user
+// cannot open the file and hold the lock.
 func (g *writeGuard) openLockFile() (*os.File, error) {
 	r, err := os.OpenRoot(g.root)
 	if err != nil {
@@ -110,7 +114,7 @@ func (g *writeGuard) openLockFile() (*os.File, error) {
 	}
 	defer r.Close()
 
-	if err := r.Mkdir(lockDirName, 0o755); err != nil && !errors.Is(err, fs.ErrExist) {
+	if err := r.Mkdir(lockDirName, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
 		return nil, lockError(err)
 	}
 	fi, err := r.Lstat(lockDirName)
@@ -125,9 +129,17 @@ func (g *writeGuard) openLockFile() (*os.File, error) {
 	// On darwin, openat(O_CREAT) can fail with ENOENT while another process
 	// creates the same file, so a fresh vault's first concurrent locks need
 	// a few bounded retries.
+	errNotRegular := fmt.Errorf("%s is not a regular file", lockFileName)
 	var f *os.File
 	for attempt := 0; ; attempt++ {
-		f, err = r.OpenFile(name, os.O_RDWR|os.O_CREATE, 0o644)
+		fi, err = r.Lstat(name)
+		switch {
+		case err == nil && !fi.Mode().IsRegular():
+			return nil, lockError(errNotRegular)
+		case err != nil && !errors.Is(err, fs.ErrNotExist):
+			return nil, lockError(err)
+		}
+		f, err = r.OpenFile(name, os.O_RDWR|os.O_CREATE, 0o600)
 		if err == nil {
 			break
 		}
@@ -136,9 +148,12 @@ func (g *writeGuard) openLockFile() (*os.File, error) {
 		}
 		time.Sleep(lockMinBackoff)
 	}
-	fi, err = r.Lstat(name)
-	if err == nil && !fi.Mode().IsRegular() {
-		err = fmt.Errorf("%s is not a regular file", lockFileName)
+	opened, err := f.Stat()
+	if err == nil {
+		fi, err = r.Lstat(name)
+	}
+	if err == nil && (!fi.Mode().IsRegular() || !os.SameFile(opened, fi)) {
+		err = errNotRegular
 	}
 	if err != nil {
 		_ = f.Close()
