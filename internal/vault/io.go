@@ -140,9 +140,7 @@ func (v *Vault) ListCanvases() ([]string, error) {
 var readNoteHook func()
 
 // ReadNote reads a markdown note by path. After ValidatePath, the file is
-// opened through an os.Root on the vault, so a symlink swapped in after the
-// check cannot lead outside the vault, and only a regular file is read (a
-// FIFO named *.md is rejected without blocking).
+// read with readValidated.
 func (v *Vault) ReadNote(path string) (string, error) {
 	safePath, err := v.security.ValidatePath(path)
 	if err != nil {
@@ -151,33 +149,43 @@ func (v *Vault) ReadNote(path string) (string, error) {
 	if readNoteHook != nil {
 		readNoteHook()
 	}
+	content, err := v.readValidated("read note", path, safePath)
+	return string(content), err
+}
+
+// readValidated reads safePath, a path ValidatePath returned for arg. The
+// file is opened through an os.Root on the vault, so a symlink swapped in
+// after the check cannot lead outside the vault, and only a regular file is
+// read (a FIFO is rejected without blocking: O_NONBLOCK on unix). Errors
+// name arg or a vault-relative path, prefixed with op.
+func (v *Vault) readValidated(op, arg, safePath string) ([]byte, error) {
 	rel, err := filepath.Rel(v.security.root, safePath)
 	if err != nil || !relInside(rel) {
-		return "", errOutside
+		return nil, errOutside
 	}
 
 	root, err := os.OpenRoot(v.security.root)
 	if err != nil {
-		return "", v.fsError("read note", path, err)
+		return nil, v.fsError(op, arg, err)
 	}
 	defer root.Close()
 	f, err := root.OpenFile(rel, os.O_RDONLY|openNonblock, 0)
 	if err != nil {
-		return "", v.fsError("read note", path, err)
+		return nil, v.fsError(op, arg, err)
 	}
 	defer f.Close()
 	info, err := f.Stat()
 	if err != nil {
-		return "", v.fsError("read note", path, err)
+		return nil, v.fsError(op, arg, err)
 	}
 	if !info.Mode().IsRegular() {
-		return "", fmt.Errorf("read note %s: not a regular file", filepath.ToSlash(rel))
+		return nil, fmt.Errorf("%s %s: not a regular file", op, filepath.ToSlash(rel))
 	}
 	content, err := io.ReadAll(f)
 	if err != nil {
-		return "", v.fsError("read note", path, err)
+		return nil, v.fsError(op, arg, err)
 	}
-	return string(content), nil
+	return content, nil
 }
 
 // NormalizeNotePath enforces that write operations only target markdown notes.
@@ -279,22 +287,30 @@ func (v *Vault) writeNoteLocked(path, content string) error {
 	return nil
 }
 
-// ReadCanvas reads a canvas file
+// ReadCanvas reads a .canvas file (extension in any case). A symlink must
+// lead to a .canvas file too. The file is read like a note (readValidated),
+// so a FIFO is refused without blocking.
 func (v *Vault) ReadCanvas(path string) (*markdown.Canvas, error) {
 	path, err := v.relArg(path)
 	if err != nil {
 		return nil, err
 	}
+	notCanvas := fmt.Errorf("not a canvas file: %s; get_canvas reads .canvas files only", path)
+	if !isCanvasPath(path) {
+		return nil, notCanvas
+	}
 	safePath, err := v.security.ValidatePath(path)
 	if err != nil {
 		return nil, err
 	}
-
-	content, err := os.ReadFile(safePath)
-	if err != nil {
-		return nil, v.fsError("read canvas", path, err)
+	if !isCanvasPath(safePath) {
+		return nil, notCanvas
 	}
 
+	content, err := v.readValidated("read canvas", path, safePath)
+	if err != nil {
+		return nil, err
+	}
 	return markdown.ParseCanvas(content)
 }
 

@@ -262,3 +262,27 @@ func TestWrite_SymlinkToMarkdownAllowed(t *testing.T) {
 		t.Errorf("content = %q", b)
 	}
 }
+
+// get_canvas reads .canvas files only (any case), and a .canvas symlink
+// only when its target is a .canvas file too.
+func TestReadCanvasRequiresCanvas(t *testing.T) {
+	v := newTestVault(t)
+	put(t, v, "x.canvas", `{"nodes":[],"edges":[]}`)
+	put(t, v, "Y.CANVAS", `{"nodes":[],"edges":[]}`)
+	put(t, v, "A.md", `{"nodes":[],"edges":[]}`)
+	put(t, v, "secret.json", `{"nodes":[],"edges":[]}`)
+	for _, p := range []string{"x.canvas", "Y.CANVAS"} {
+		if _, err := v.ReadCanvas(p); err != nil {
+			t.Errorf("ReadCanvas(%s): %v", p, err)
+		}
+	}
+	for _, p := range []string{"A.md", "secret.json", "x"} {
+		if _, err := v.ReadCanvas(p); err == nil || !strings.Contains(err.Error(), "not a canvas") {
+			t.Errorf("ReadCanvas(%s) err = %v, want not a canvas", p, err)
+		}
+	}
+	mustSymlink(t, "secret.json", filepath.Join(v.Root(), "via.canvas"))
+	if _, err := v.ReadCanvas("via.canvas"); err == nil {
+		t.Error("ReadCanvas(via.canvas -> secret.json): want an error")
+	}
+}

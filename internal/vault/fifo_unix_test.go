@@ -65,3 +65,22 @@ func TestFIFONoteDoesNotHang(t *testing.T) {
 		}
 	})
 }
+
+// A FIFO named *.canvas is refused quickly instead of blocking get_canvas.
+func TestFIFOCanvasDoesNotHang(t *testing.T) {
+	v := newTestVault(t)
+	fifo := filepath.Join(v.Root(), "x.canvas")
+	if err := syscall.Mkfifo(fifo, 0o644); err != nil {
+		t.Skipf("mkfifo: %v", err)
+	}
+	t.Cleanup(func() {
+		if f, err := os.OpenFile(fifo, os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
+			f.Close()
+		}
+	})
+	within(t, 2*time.Second, "ReadCanvas(x.canvas)", func() {
+		if _, err := v.ReadCanvas("x.canvas"); err == nil {
+			t.Error("ReadCanvas of a FIFO: want an error")
+		}
+	})
+}
