@@ -1,0 +1,1 @@
+Deep note. No links.
