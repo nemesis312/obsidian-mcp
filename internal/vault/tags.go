@@ -1,6 +1,7 @@
 package vault
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/nemesis312/obsidian-mcp/internal/markdown"
@@ -53,6 +54,9 @@ func (v *Vault) ListAllTags() ([]string, error) {
 
 // GetNotesByTag returns all notes containing a specific tag
 func (v *Vault) GetNotesByTag(tag string) ([]string, error) {
+	if err := v.rejectAbsoluteTag(tag); err != nil {
+		return nil, err
+	}
 	files, err := v.ListFiles()
 	if err != nil {
 		return nil, err
@@ -108,6 +112,12 @@ type RenameResult struct {
 func (v *Vault) RenameTag(oldTag, newTag string) (RenameResult, error) {
 	res := RenameResult{Renamed: []string{}, Failed: []RenameFailure{}}
 
+	if err := v.rejectAbsoluteTag(oldTag); err != nil {
+		return res, fmt.Errorf("invalid old_tag: %w", err)
+	}
+	if err := v.rejectAbsoluteTag(newTag); err != nil {
+		return res, fmt.Errorf("invalid new_tag: %w", err)
+	}
 	oldTag, err := markdown.NormalizeTagName(oldTag)
 	if err != nil {
 		return res, fmt.Errorf("invalid old_tag: %w", err)
@@ -211,4 +221,13 @@ func (v *Vault) BuildTagIndex() (TagIndex, error) {
 	}
 
 	return index, nil
+}
+
+// rejectAbsoluteTag refuses a tag that is really an absolute path into the
+// vault, so error messages and results never echo the vault location.
+func (v *Vault) rejectAbsoluteTag(tag string) error {
+	if _, err := v.relArg(tag); errors.Is(err, ErrAbsolutePath) {
+		return ErrAbsolutePath
+	}
+	return nil
 }

@@ -281,6 +281,10 @@ func (v *Vault) writeNoteLocked(path, content string) error {
 
 // ReadCanvas reads a canvas file
 func (v *Vault) ReadCanvas(path string) (*markdown.Canvas, error) {
+	path, err := v.relArg(path)
+	if err != nil {
+		return nil, err
+	}
 	safePath, err := v.security.ValidatePath(path)
 	if err != nil {
 		return nil, err
