@@ -26,11 +26,11 @@ import (
 	"sort"
 	"strings"
 
-	"golang.org/x/text/unicode/norm"
+	"github.com/nemesis312/obsidian-mcp/internal/markdown"
 )
 
 // Key returns the matching key for s: NFC-normalized and lowercased.
-func Key(s string) string { return strings.ToLower(norm.NFC.String(s)) }
+func Key(s string) string { return markdown.Key(s) }
 
 // Status is the outcome of resolving a Ref.
 type Status int
