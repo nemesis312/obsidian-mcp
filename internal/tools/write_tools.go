@@ -15,6 +15,7 @@ func RegisterWriteTools(s *server.MCPServer, v *vault.Vault) {
 	registerCreateNote(s, v)
 	registerAppendToNote(s, v)
 	registerEditSection(s, v)
+	registerMoveNote(s, v)
 	registerPatchNote(s, v)
 	registerUpdateFrontmatter(s, v)
 	registerDeleteNote(s, v)
@@ -332,5 +333,77 @@ func registerEditSection(s *server.MCPServer, v *vault.Vault) {
 			return mcp.NewToolResultError(fmt.Sprintf("failed to edit section: %v", err)), nil
 		}
 		return writeResult(snap), nil
+	})
+}
+
+// move_note - Move or rename a note and rewrite the links the move changes
+func registerMoveNote(s *server.MCPServer, v *vault.Vault) {
+	s.AddTool(mcp.Tool{
+		Name: "move_note",
+		Description: "Move or rename a single .md note and keep the vault's links working. " +
+			"Rewrites every link form the move affects, in other notes and in the moved note itself: wikilinks, embeds, markdown links, and links with an alias, a #heading or a ^block fragment keep their alias, fragment and form. " +
+			"A ghost link that starts resolving because of the move is reported in warnings, not rewritten. " +
+			"The destination is a vault-relative path (.md is optional; missing folders are created). The move refuses a destination that already exists. A case-only rename is allowed. " +
+			"Failures are per file: a note whose links could not be updated is listed in failed, the move itself is not rolled back. " +
+			"Use dry_run=true to preview: it returns the same result, takes no lock and writes nothing. expected_version is optional.",
+		InputSchema: mcp.ToolInputSchema{
+			Type: "object",
+			Properties: map[string]interface{}{
+				"path": map[string]interface{}{
+					"type":        "string",
+					"description": notePathDesc,
+				},
+				"new_path": map[string]interface{}{
+					"type":        "string",
+					"description": "Vault-relative destination path, e.g. \"Archive/Old note\" (.md is optional). Must not exist yet.",
+				},
+				"expected_version": map[string]interface{}{
+					"type":        "string",
+					"description": "Version from get_note. Optional: if given and the note changed since, the move is refused with the current version.",
+				},
+				"dry_run": map[string]interface{}{
+					"type":        "boolean",
+					"description": "Preview the move and its link rewrites without writing anything (default false)",
+				},
+			},
+			Required: []string{"path", "new_path"},
+		},
+	}, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		path, err := request.RequireString("path")
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("invalid path: %v", err)), nil
+		}
+		newPath, err := request.RequireString("new_path")
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("invalid new_path: %v", err)), nil
+		}
+		expected, err := expectedVersion(request)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		dryRun := false
+		if raw, ok := request.GetArguments()["dry_run"]; ok && raw != nil {
+			if dryRun, ok = raw.(bool); !ok {
+				return mcp.NewToolResultError("invalid dry_run: must be a boolean"), nil
+			}
+		}
+
+		res, err := v.MoveNote(ctx, path, newPath, expected, dryRun)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("failed to move: %v", err)), nil
+		}
+		if res.Updated == nil {
+			res.Updated = []vault.LinkChange{}
+		}
+		if res.Failed == nil {
+			res.Failed = []vault.RenameFailure{}
+		}
+		if res.Warnings == nil {
+			res.Warnings = []string{}
+		}
+		return jsonResult(struct {
+			Success bool `json:"success"`
+			vault.MoveResult
+		}{true, res}), nil
 	})
 }

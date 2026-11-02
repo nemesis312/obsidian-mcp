@@ -14,7 +14,7 @@ var sweepTools = []string{
 	"append_to_note", "create_note", "delete_note", "edit_section", "get_backlinks", "get_canvas",
 	"get_frontmatter", "get_link_graph", "get_linked_mentions", "get_note",
 	"get_note_metadata", "get_notes_by_tag", "get_orphaned_notes", "get_outgoing_links",
-	"list_all_tags", "list_canvases", "list_vault_files", "patch_note", "rename_tag",
+	"list_all_tags", "list_canvases", "list_vault_files", "move_note", "patch_note", "rename_tag",
 	"search_vault", "update_frontmatter",
 }
 
@@ -158,6 +158,7 @@ func hostileValues(t *testing.T) []func(root string) string {
 		func(string) string { return ".OBSIDIAN-MCP/x.md" },
 		func(string) string { return ".obsidian-mcp./x.md" },
 		func(string) string { return "/C:/x.md" },
+		func(string) string { return "OBSIDI~1/x" },
 	}
 }
 
