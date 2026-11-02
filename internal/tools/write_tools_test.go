@@ -309,3 +309,47 @@ func TestCreateNoteWindowsNameForms(t *testing.T) {
 		t.Error("draft~2.md was not created")
 	}
 }
+
+func TestEditSectionTool(t *testing.T) {
+	e := newEnv(t)
+	e.write("n.md", "# A\nold\n\n# B\nb\n")
+
+	out, isErr := e.call("edit_section", map[string]any{"path": "n.md", "heading": "A", "mode": "replace", "content": "new"})
+	if !isErr || !strings.Contains(out, "expected_version") {
+		t.Fatalf("replace without version: isErr=%v out=%s", isErr, out)
+	}
+
+	out, isErr = e.call("edit_section", map[string]any{
+		"path": "n.md", "heading": "A", "mode": "replace", "content": "new",
+		"expected_version": e.versionOf("n.md"),
+	})
+	if isErr {
+		t.Fatalf("replace: %s", out)
+	}
+	if got := e.read("n.md"); got != "# A\nnew\n\n# B\nb\n" {
+		t.Fatalf("after replace: %q", got)
+	}
+
+	if out, isErr = e.call("edit_section", map[string]any{"path": "n.md", "heading": "B", "mode": "append", "content": "tail"}); isErr {
+		t.Fatalf("append: %s", out)
+	}
+	if got := e.read("n.md"); got != "# A\nnew\n\n# B\nb\ntail\n" {
+		t.Fatalf("after append: %q", got)
+	}
+
+	if out, isErr = e.call("edit_section", map[string]any{"path": "n.md", "heading": "B", "mode": "prepend", "content": "head"}); isErr {
+		t.Fatalf("prepend: %s", out)
+	}
+	if got := e.read("n.md"); got != "# A\nnew\n\n# B\nhead\nb\ntail\n" {
+		t.Fatalf("after prepend: %q", got)
+	}
+
+	out, isErr = e.call("edit_section", map[string]any{"path": "n.md", "heading": "B", "mode": "bogus", "content": "x"})
+	if !isErr || !strings.Contains(out, "mode") {
+		t.Fatalf("invalid mode: isErr=%v out=%s", isErr, out)
+	}
+	out, isErr = e.call("edit_section", map[string]any{"path": "n.md", "heading": "Zed", "mode": "append", "content": "x"})
+	if !isErr || !strings.Contains(out, "not found") {
+		t.Fatalf("missing heading: isErr=%v out=%s", isErr, out)
+	}
+}

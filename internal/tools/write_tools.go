@@ -14,6 +14,7 @@ import (
 func RegisterWriteTools(s *server.MCPServer, v *vault.Vault) {
 	registerCreateNote(s, v)
 	registerAppendToNote(s, v)
+	registerEditSection(s, v)
 	registerPatchNote(s, v)
 	registerUpdateFrontmatter(s, v)
 	registerDeleteNote(s, v)
@@ -269,5 +270,67 @@ func registerDeleteNote(s *server.MCPServer, v *vault.Vault) {
 			Success bool   `json:"success"`
 			Path    string `json:"path"`
 		}{true, path}), nil
+	})
+}
+
+// edit_section - Replace, append to or prepend to one section of a note
+func registerEditSection(s *server.MCPServer, v *vault.Vault) {
+	s.AddTool(mcp.Tool{
+		Name:        "edit_section",
+		Description: "Edit one section of a note, the part under a heading, leaving every other byte as it was. A section includes its subsections. Use \"Parent > Child\" to pick between headings with the same text. mode=replace needs expected_version (the \"version\" from get_note); append and prepend do not require it.",
+		InputSchema: mcp.ToolInputSchema{
+			Type: "object",
+			Properties: map[string]interface{}{
+				"path": map[string]interface{}{
+					"type":        "string",
+					"description": notePathDesc,
+				},
+				"heading": map[string]interface{}{
+					"type":        "string",
+					"description": "Heading text of the section, e.g. \"Risks\" or \"Plan > Risks\" when the text is not unique",
+				},
+				"mode": map[string]interface{}{
+					"type":        "string",
+					"enum":        []string{"replace", "append", "prepend"},
+					"description": "replace: swap the section body (needs expected_version); append: add at the end of the section; prepend: add right after the heading",
+				},
+				"content": map[string]interface{}{
+					"type":        "string",
+					"description": "Text to write",
+				},
+				"expected_version": map[string]interface{}{
+					"type":        "string",
+					"description": "Version from get_note. Required for mode=replace; optional otherwise: if given and the note changed since, the write is refused with the current version.",
+				},
+			},
+			Required: []string{"path", "heading", "mode", "content"},
+		},
+	}, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		path, err := request.RequireString("path")
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("invalid path: %v", err)), nil
+		}
+		heading, err := request.RequireString("heading")
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("invalid heading: %v", err)), nil
+		}
+		mode, err := request.RequireString("mode")
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("invalid mode: %v", err)), nil
+		}
+		content, err := request.RequireString("content")
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("invalid content: %v", err)), nil
+		}
+		expected, err := expectedVersion(request)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+
+		snap, err := v.EditSection(path, heading, vault.SectionMode(mode), content, expected)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("failed to edit section: %v", err)), nil
+		}
+		return writeResult(snap), nil
 	})
 }
