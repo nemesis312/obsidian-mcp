@@ -190,6 +190,17 @@ func TestSectionEdits(t *testing.T) {
 			t.Fatalf("got %q", got)
 		}
 	})
+	t.Run("replace empty-body section keeps blank line", func(t *testing.T) {
+		for _, c := range []struct{ in, want string }{
+			{"## Notes\n\n## Next\n", "## Notes\nnew\n\n## Next\n"},
+			{"## Notes\r\n\r\n## Next\r\n", "## Notes\r\nnew\r\n\r\n## Next\r\n"},
+		} {
+			h := find(t, c.in, "Notes")
+			if got := ReplaceSection(c.in, h, "new"); got != c.want {
+				t.Errorf("got %q want %q", got, c.want)
+			}
+		}
+	})
 	t.Run("replace last section", func(t *testing.T) {
 		h := find(t, lf, "B")
 		got := ReplaceSection(lf, h, "x")

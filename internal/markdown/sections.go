@@ -324,10 +324,10 @@ func PrependToSection(content string, h Heading, text string) string {
 }
 
 func endsWithBlankLine(s string) bool {
-	s = strings.TrimSuffix(s, "\n")
-	if s == "" {
+	if !strings.HasSuffix(s, "\n") {
 		return false
 	}
+	s = strings.TrimSuffix(s, "\n")
 	s = strings.TrimSuffix(s, "\r")
 	return s == "" || strings.HasSuffix(s, "\n")
 }
