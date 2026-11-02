@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -143,17 +144,33 @@ func TestAppendToNote(t *testing.T) {
 	}
 }
 
+// versionOf reads rel through get_note and returns its version token.
+func (e *env) versionOf(rel string) string {
+	e.t.Helper()
+	out, isErr := e.call("get_note", map[string]any{"path": rel})
+	if isErr {
+		e.t.Fatalf("get_note %s: %s", rel, out)
+	}
+	var r struct {
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal([]byte(out), &r); err != nil {
+		e.t.Fatal(err)
+	}
+	return r.Version
+}
+
 func TestPatchNote(t *testing.T) {
 	e := newEnv(t)
 	e.write("n.md", "old")
 
-	if out, isErr := e.call("patch_note", map[string]any{"path": "n.md", "content": "new"}); isErr {
+	if out, isErr := e.call("patch_note", map[string]any{"path": "n.md", "content": "new", "expected_version": e.versionOf("n.md")}); isErr {
 		t.Fatalf("unexpected error: %s", out)
 	}
 	if got := e.read("n.md"); got != "new" {
 		t.Errorf("content = %q", got)
 	}
-	if _, isErr := e.call("patch_note", map[string]any{"path": "script.sh", "content": "x"}); !isErr {
+	if _, isErr := e.call("patch_note", map[string]any{"path": "script.sh", "content": "x", "expected_version": "sha256:0123456789abcdef"}); !isErr {
 		t.Error("non-md must fail")
 	}
 	if e.exists("script.sh") {
@@ -190,16 +207,16 @@ func TestDeleteNote(t *testing.T) {
 	e.write("n.md", "x")
 	e.write("keep.txt", "x")
 
-	if out, isErr := e.call("delete_note", map[string]any{"path": "n.md"}); isErr {
+	if out, isErr := e.call("delete_note", map[string]any{"path": "n.md", "expected_version": e.versionOf("n.md")}); isErr {
 		t.Fatalf("unexpected error: %s", out)
 	}
 	if e.exists("n.md") {
 		t.Error("note still exists")
 	}
-	if _, isErr := e.call("delete_note", map[string]any{"path": "n.md"}); !isErr {
+	if _, isErr := e.call("delete_note", map[string]any{"path": "n.md", "expected_version": "sha256:0123456789abcdef"}); !isErr {
 		t.Error("deleting missing note must fail")
 	}
-	if _, isErr := e.call("delete_note", map[string]any{"path": "keep.txt"}); !isErr {
+	if _, isErr := e.call("delete_note", map[string]any{"path": "keep.txt", "expected_version": "sha256:0123456789abcdef"}); !isErr {
 		t.Error("non-md delete must fail")
 	}
 	if !e.exists("keep.txt") {
@@ -259,5 +276,36 @@ func TestRenameTag(t *testing.T) {
 		if _, isErr := e.call("rename_tag", map[string]any{"old_tag": "fresh", "new_tag": bad}); !isErr {
 			t.Errorf("new_tag %q must be rejected", bad)
 		}
+	}
+}
+
+// Windows strips a trailing "." or space, resolves 8.3 short names and
+// treats "::$INDEX_ALLOCATION" as the folder itself, so each of these paths
+// would land in a protected folder. All are refused, and nothing is created.
+func TestCreateNoteWindowsNameForms(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows only")
+	}
+	for _, p := range []string{".obsidian-mcp./x.md", ".git./x.md", ".obsidian ./x.md", ".git::$INDEX_ALLOCATION/x.md", "OBSIDI~1/x.md", "GIT~1/x.md"} {
+		e := newEnv(t)
+		out, isErr := e.call("create_note", map[string]any{"path": p, "content": "x"})
+		if !isErr || !strings.Contains(out, "path_violation") {
+			t.Errorf("create_note(%q) = %q, isErr=%v; want path_violation", p, out, isErr)
+		}
+		entries, err := os.ReadDir(e.root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) != 0 {
+			t.Errorf("create_note(%q) created %v", p, entries)
+		}
+	}
+	// A "~<digit>" name that is no protected folder's short name still works.
+	e := newEnv(t)
+	if out, isErr := e.call("create_note", map[string]any{"path": "draft~2.md", "content": "x"}); isErr {
+		t.Errorf("create_note(draft~2.md) = %q, want success", out)
+	}
+	if !e.exists("draft~2.md") {
+		t.Error("draft~2.md was not created")
 	}
 }

@@ -210,6 +210,8 @@ All of the following are designer's calls, made to answer the builder check:
 
 **Layout (designer's call; the maintainer can override).** The default is `memory/<project>/<type>/<YYYY-MM-DD>-<slug>.md`. The root folder name is configurable with a flag or env var. Any note anywhere in the vault that has `project` and `type` frontmatter counts as a memory, so humans can file notes wherever they like.
 
+**Links the server writes (user decision, 2026-10-31).** Links the server writes into notes (wikilinks, embeds and markdown links) must never be inside inline code or code blocks: no backticks or fences around them. Obsidian and this server's own index ignore links inside code. Tool descriptions that invite agents to write links must say so.
+
 MCP resources are optional; the builder decides. Graphify exposes a report, stats and similar views as resources. If our client support is good, the overview and the per-project context can be exposed as resources too.
 
 ### 7.6 Viewer seam (no UI now)

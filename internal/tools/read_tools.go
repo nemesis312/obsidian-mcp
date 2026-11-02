@@ -11,6 +11,10 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
+// notePathDesc describes the "path" argument of every tool that takes an
+// existing note.
+const notePathDesc = `Note path (with or without .md) or bare note name, e.g. "projects/x/Note.md" or "Note". A leading "/" means the vault root.`
+
 // RegisterReadTools registers all read-only tools
 func RegisterReadTools(s *server.MCPServer, v *vault.Vault) {
 	registerListVaultFiles(s, v)
@@ -48,13 +52,13 @@ func registerListVaultFiles(s *server.MCPServer, v *vault.Vault) {
 func registerGetNote(s *server.MCPServer, v *vault.Vault) {
 	s.AddTool(mcp.Tool{
 		Name:        "get_note",
-		Description: "Read the content of a note by path",
+		Description: "Read a note by path or name. Returns its canonical path, its content and its version (pass it as expected_version when replacing or deleting the note).",
 		InputSchema: mcp.ToolInputSchema{
 			Type: "object",
 			Properties: map[string]interface{}{
 				"path": map[string]interface{}{
 					"type":        "string",
-					"description": "Path to the note (e.g., 'folder/note.md')",
+					"description": notePathDesc,
 				},
 			},
 			Required: []string{"path"},
@@ -65,12 +69,16 @@ func registerGetNote(s *server.MCPServer, v *vault.Vault) {
 			return mcp.NewToolResultError(fmt.Sprintf("invalid path: %v", err)), nil
 		}
 
-		content, err := v.ReadNote(path)
+		snap, err := v.ReadNoteVersioned(path)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("failed to read note: %v", err)), nil
 		}
 
-		return mcp.NewToolResultText(content), nil
+		return jsonResult(struct {
+			Path    string `json:"path"`
+			Version string `json:"version"`
+			Content string `json:"content"`
+		}{snap.Path, snap.Version, snap.Content}), nil
 	})
 }
 
@@ -119,7 +127,7 @@ func registerGetFrontmatter(s *server.MCPServer, v *vault.Vault) {
 			Properties: map[string]interface{}{
 				"path": map[string]interface{}{
 					"type":        "string",
-					"description": "Path to the note",
+					"description": notePathDesc,
 				},
 			},
 			Required: []string{"path"},
@@ -150,7 +158,7 @@ func registerGetNoteMetadata(s *server.MCPServer, v *vault.Vault) {
 			Properties: map[string]interface{}{
 				"path": map[string]interface{}{
 					"type":        "string",
-					"description": "Path to the note",
+					"description": notePathDesc,
 				},
 			},
 			Required: []string{"path"},
@@ -161,7 +169,13 @@ func registerGetNoteMetadata(s *server.MCPServer, v *vault.Vault) {
 			return mcp.NewToolResultError(fmt.Sprintf("invalid path: %v", err)), nil
 		}
 
-		// Get frontmatter
+		// Address once; everything below uses the canonical path.
+		snap, err := v.ReadNoteVersioned(path)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("failed to get metadata: %v", err)), nil
+		}
+		path = snap.Path
+
 		fm, err := v.GetFrontmatter(path)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("failed to get metadata: %v", err)), nil
@@ -184,6 +198,7 @@ func registerGetNoteMetadata(s *server.MCPServer, v *vault.Vault) {
 
 		metadata := map[string]interface{}{
 			"path":        path,
+			"version":     snap.Version,
 			"frontmatter": fm,
 			"outgoing":    outgoing,
 			"backlinks":   backlinks,

@@ -140,9 +140,7 @@ func (v *Vault) ListCanvases() ([]string, error) {
 var readNoteHook func()
 
 // ReadNote reads a markdown note by path. After ValidatePath, the file is
-// opened through an os.Root on the vault, so a symlink swapped in after the
-// check cannot lead outside the vault, and only a regular file is read (a
-// FIFO named *.md is rejected without blocking).
+// read with readValidated.
 func (v *Vault) ReadNote(path string) (string, error) {
 	safePath, err := v.security.ValidatePath(path)
 	if err != nil {
@@ -151,33 +149,43 @@ func (v *Vault) ReadNote(path string) (string, error) {
 	if readNoteHook != nil {
 		readNoteHook()
 	}
+	content, err := v.readValidated("read note", path, safePath)
+	return string(content), err
+}
+
+// readValidated reads safePath, a path ValidatePath returned for arg. The
+// file is opened through an os.Root on the vault, so a symlink swapped in
+// after the check cannot lead outside the vault, and only a regular file is
+// read (a FIFO is rejected without blocking: O_NONBLOCK on unix). Errors
+// name arg or a vault-relative path, prefixed with op.
+func (v *Vault) readValidated(op, arg, safePath string) ([]byte, error) {
 	rel, err := filepath.Rel(v.security.root, safePath)
 	if err != nil || !relInside(rel) {
-		return "", errOutside
+		return nil, errOutside
 	}
 
 	root, err := os.OpenRoot(v.security.root)
 	if err != nil {
-		return "", v.fsError("read note", path, err)
+		return nil, v.fsError(op, arg, err)
 	}
 	defer root.Close()
 	f, err := root.OpenFile(rel, os.O_RDONLY|openNonblock, 0)
 	if err != nil {
-		return "", v.fsError("read note", path, err)
+		return nil, v.fsError(op, arg, err)
 	}
 	defer f.Close()
 	info, err := f.Stat()
 	if err != nil {
-		return "", v.fsError("read note", path, err)
+		return nil, v.fsError(op, arg, err)
 	}
 	if !info.Mode().IsRegular() {
-		return "", fmt.Errorf("read note %s: not a regular file", filepath.ToSlash(rel))
+		return nil, fmt.Errorf("%s %s: not a regular file", op, filepath.ToSlash(rel))
 	}
 	content, err := io.ReadAll(f)
 	if err != nil {
-		return "", v.fsError("read note", path, err)
+		return nil, v.fsError(op, arg, err)
 	}
-	return string(content), nil
+	return content, nil
 }
 
 // NormalizeNotePath enforces that write operations only target markdown notes.
@@ -256,8 +264,10 @@ func (v *Vault) indexRemove(norm string) {
 	}
 }
 
-// WriteNote writes content to a note (creates or overwrites) atomically.
-func (v *Vault) WriteNote(path, content string) error {
+// writeNoteLocked writes content to the note at path (created or
+// overwritten) atomically. The caller holds the write guard and updates the
+// index after releasing it.
+func (v *Vault) writeNoteLocked(path, content string) error {
 	norm, err := NormalizeNotePath(path)
 	if err != nil {
 		return err
@@ -274,108 +284,33 @@ func (v *Vault) WriteNote(path, content string) error {
 	if err := writeFileAtomic(safePath, []byte(content)); err != nil {
 		return v.fsError("write note", norm, err)
 	}
-
-	v.indexUpdate(norm)
 	return nil
 }
 
-// CreateNote creates a new note, failing if it already exists. Frontmatter (if
-// any) is merged into content before the single write. It returns the
-// normalized vault path of the note.
-//
-// Exclusivity: the full content is first written to a temp file in the same
-// directory, then published with os.Link, which fails with EEXIST atomically.
-// Readers therefore never observe a partially written note and concurrent
-// creators cannot both succeed. If the filesystem has no hard links, it falls
-// back to open(O_CREATE|O_EXCL) on the final path (still race-free for
-// exclusivity, but not for partial reads).
-func (v *Vault) CreateNote(path, content string, frontmatter map[string]interface{}) (string, error) {
-	norm, err := NormalizeNotePath(path)
-	if err != nil {
-		return "", err
-	}
-	safePath, err := v.resolveNote(norm)
-	if err != nil {
-		return "", err
-	}
-
-	if len(frontmatter) > 0 {
-		content, err = markdown.UpdateFrontmatter(content, frontmatter)
-		if err != nil {
-			return "", fmt.Errorf("failed to add frontmatter: %w", err)
-		}
-	}
-
-	if err := os.MkdirAll(filepath.Dir(safePath), 0o755); err != nil {
-		return "", v.fsError("create directory for", norm, err)
-	}
-
-	if err := createExclusive(safePath, []byte(content)); err != nil {
-		if errors.Is(err, errNoteExists) {
-			return "", err
-		}
-		return "", v.fsError("create note", norm, err)
-	}
-
-	v.indexUpdate(norm)
-	return norm, nil
-}
-
-// AppendToNote appends content to an existing note
-func (v *Vault) AppendToNote(path, content string) error {
-	norm, err := NormalizeNotePath(path)
-	if err != nil {
-		return err
-	}
-	existing, err := v.ReadNote(norm)
-	if err != nil {
-		return err
-	}
-
-	updated := existing
-	if !strings.HasSuffix(existing, "\n") {
-		updated += "\n"
-	}
-	updated += content
-
-	return v.WriteNote(norm, updated)
-}
-
-// DeleteNote removes a note from the vault
-func (v *Vault) DeleteNote(path string) error {
-	norm, err := NormalizeNotePath(path)
-	if err != nil {
-		return err
-	}
-	safePath, err := v.resolveNote(norm)
-	if err != nil {
-		return err
-	}
-
-	if info, err := os.Stat(safePath); err == nil && info.IsDir() {
-		return fmt.Errorf("failed to delete note: %s is a directory", path)
-	}
-
-	if err := os.Remove(safePath); err != nil {
-		return v.fsError("delete note", path, err)
-	}
-
-	v.indexRemove(norm)
-	return nil
-}
-
-// ReadCanvas reads a canvas file
+// ReadCanvas reads a .canvas file (extension in any case). A symlink must
+// lead to a .canvas file too. The file is read like a note (readValidated),
+// so a FIFO is refused without blocking.
 func (v *Vault) ReadCanvas(path string) (*markdown.Canvas, error) {
+	path, err := v.relArg(path)
+	if err != nil {
+		return nil, err
+	}
+	notCanvas := fmt.Errorf("not a canvas file: %s; get_canvas reads .canvas files only", path)
+	if !isCanvasPath(path) {
+		return nil, notCanvas
+	}
 	safePath, err := v.security.ValidatePath(path)
 	if err != nil {
 		return nil, err
 	}
-
-	content, err := os.ReadFile(safePath)
-	if err != nil {
-		return nil, v.fsError("read canvas", path, err)
+	if !isCanvasPath(safePath) {
+		return nil, notCanvas
 	}
 
+	content, err := v.readValidated("read canvas", path, safePath)
+	if err != nil {
+		return nil, err
+	}
 	return markdown.ParseCanvas(content)
 }
 
@@ -403,9 +338,14 @@ func (v *Vault) SearchVault(query string) ([]string, error) {
 	return matches, nil
 }
 
-// GetFrontmatter extracts frontmatter from a note
-func (v *Vault) GetFrontmatter(path string) (map[string]interface{}, error) {
-	content, err := v.ReadNote(path)
+// GetFrontmatter extracts frontmatter from the note arg addresses (see
+// AddressNote).
+func (v *Vault) GetFrontmatter(arg string) (map[string]interface{}, error) {
+	rel, err := v.AddressNote(arg)
+	if err != nil {
+		return nil, err
+	}
+	content, err := v.ReadNote(rel)
 	if err != nil {
 		return nil, err
 	}
@@ -420,25 +360,6 @@ func (v *Vault) GetFrontmatter(path string) (map[string]interface{}, error) {
 	}
 
 	return fm.Data, nil
-}
-
-// UpdateFrontmatter updates frontmatter fields in a note
-func (v *Vault) UpdateFrontmatter(path string, updates map[string]interface{}) error {
-	path, err := NormalizeNotePath(path)
-	if err != nil {
-		return err
-	}
-	content, err := v.ReadNote(path)
-	if err != nil {
-		return err
-	}
-
-	updated, err := markdown.UpdateFrontmatter(content, updates)
-	if err != nil {
-		return err
-	}
-
-	return v.WriteNote(path, updated)
 }
 
 // NoteExists checks if a note exists

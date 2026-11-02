@@ -6,11 +6,12 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
 // protectedSegments are directory/file names that are never reachable, at any depth.
-var protectedSegments = []string{".git", ".obsidian"}
+var protectedSegments = []string{".git", ".obsidian", ".obsidian-mcp"}
 
 type SecurityLayer struct {
 	root    string // absolute vault root with symlinks resolved
@@ -29,7 +30,7 @@ func NewSecurityLayer(root string) *SecurityLayer {
 }
 
 // ValidatePath ensures target path is within the vault (after resolving symlinks)
-// and does not touch a protected segment (.git, .obsidian).
+// and does not touch a protected segment (.git, .obsidian, .obsidian-mcp).
 // Returns the resolved absolute path if valid, error otherwise.
 func (s *SecurityLayer) ValidatePath(targetPath string) (string, error) {
 	// 0. A volume name without an absolute path ("Z:x.md", Windows drive-relative)
@@ -48,8 +49,15 @@ func (s *SecurityLayer) ValidatePath(targetPath string) (string, error) {
 
 	// 2. Lexical containment BEFORE any filesystem call, so paths outside the
 	// vault (UNC shares, other volumes, "..") are never stat'ed or resolved.
-	if !s.lexicallyInside(absPath) {
+	lexRel, ok := s.lexicalRel(absPath)
+	if !ok {
 		return "", errOutside
+	}
+	// 2b. Windows name forms that alias another name (trailing "." or space,
+	// "::$INDEX_ALLOCATION" streams, 8.3 short names) are refused before any
+	// filesystem call, so they can never reach a protected folder.
+	if checkWindowsNames && hasWindowsUnsafeSegment(lexRel) {
+		return "", errWindowsName
 	}
 
 	// 3. Resolve symlinks (deepest existing ancestor for paths that don't exist
@@ -78,38 +86,86 @@ func (s *SecurityLayer) ValidatePath(targetPath string) (string, error) {
 var (
 	errOutside = errors.New("path_violation: path is outside the vault")
 	errInvalid = errors.New("path_violation: invalid path")
+	// errWindowsName rejects a segment Windows would read as another name.
+	errWindowsName = errors.New(`path_violation: name not allowed (a ':', a trailing '.' or space, or an 8.3 short name of a protected folder like "OBSIDI~1")`)
 )
+
+// checkWindowsNames enables hasWindowsUnsafeSegment in ValidatePath.
+var checkWindowsNames = runtime.GOOS == "windows"
 
 func relInside(rel string) bool {
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
-// lexicallyInside reports whether abs lies under the root (resolved or as
-// given) using string operations only. UNC paths and other volumes are rejected.
-func (s *SecurityLayer) lexicallyInside(abs string) bool {
+// lexicalRel returns abs relative to the root (resolved or as given) when
+// it lies under it, using string operations only. UNC paths and other
+// volumes are rejected.
+func (s *SecurityLayer) lexicalRel(abs string) (string, bool) {
 	if strings.HasPrefix(abs, `\\`) || strings.HasPrefix(abs, "//") {
-		return false // UNC / device paths; never touch them
+		return "", false // UNC / device paths; never touch them
 	}
 	for _, root := range []string{s.root, s.rawRoot} {
 		if !strings.EqualFold(filepath.VolumeName(abs), filepath.VolumeName(root)) {
 			continue
 		}
 		if rel, err := filepath.Rel(root, abs); err == nil && relInside(rel) {
+			return rel, true
+		}
+	}
+	return "", false
+}
+
+// hasProtectedSegment reports whether a segment of rel names a protected
+// folder, ignoring case and any trailing dots and spaces (which Windows
+// strips, so ".git." is ".git" there). It does so on every OS.
+func hasProtectedSegment(rel string) bool {
+	for _, seg := range strings.Split(rel, string(filepath.Separator)) {
+		trimmed := strings.TrimRight(seg, ". ")
+		for _, p := range protectedSegments {
+			if strings.EqualFold(seg, p) || strings.EqualFold(trimmed, p) { // case-insensitive filesystems
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// hasWindowsUnsafeSegment reports whether a segment of rel (other than ".")
+// contains ':', ends in '.' or space, or is the 8.3 short-name alias of a
+// protected folder (isProtectedShortName). Windows reads each of these as
+// another name.
+func hasWindowsUnsafeSegment(rel string) bool {
+	for _, seg := range strings.Split(rel, string(filepath.Separator)) {
+		if seg == "" || seg == "." {
+			continue
+		}
+		if strings.ContainsRune(seg, ':') || strings.HasSuffix(seg, ".") || strings.HasSuffix(seg, " ") {
+			return true
+		}
+		if isProtectedShortName(seg) {
 			return true
 		}
 	}
 	return false
 }
 
-func hasProtectedSegment(rel string) bool {
-	for _, seg := range strings.Split(rel, string(filepath.Separator)) {
-		for _, p := range protectedSegments {
-			if strings.EqualFold(seg, p) { // case-insensitive filesystems
-				return true
-			}
+// isProtectedShortName reports whether seg can be the 8.3 short-name alias
+// of a protected folder: Windows drops the leading dot, so ".git" is
+// "GIT~1" and ".obsidian" or ".obsidian-mcp" is "OBSIDI~1". It matches,
+// ignoring case, ^\.*(GIT|OBSIDI)~[0-9]+$. Other names with "~<digit>",
+// such as "draft~2.md", are not aliases of a protected folder.
+func isProtectedShortName(seg string) bool {
+	seg = strings.TrimLeft(seg, ".")
+	stem, num, ok := strings.Cut(seg, "~")
+	if !ok || num == "" || !(strings.EqualFold(stem, "GIT") || strings.EqualFold(stem, "OBSIDI")) {
+		return false
+	}
+	for i := 0; i < len(num); i++ {
+		if num[i] < '0' || num[i] > '9' {
+			return false
 		}
 	}
-	return false
+	return true
 }
 
 // resolveExisting resolves symlinks in p. If p (or a suffix of it) does not

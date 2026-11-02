@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/nemesis312/obsidian-mcp/internal/index"
+	"github.com/nemesis312/obsidian-mcp/internal/links"
 )
 
 // fakeSource is an in-memory vault. It is safe for concurrent use.
@@ -869,5 +870,54 @@ func TestRootOnlyTargetHasNoEdge(t *testing.T) {
 		if e.To == "" {
 			t.Fatalf("graph edge with empty To: %+v", edges)
 		}
+	}
+}
+
+func addressFixture() *fakeSource {
+	return newFake(map[string]string{
+		"Home.md":          "[[Deep Note]]",
+		"sub/Deep Note.md": "",
+		"a/Dup.md":         "",
+		"b/Dup.md":         "",
+		"Notes/A.md":       "",
+		"notes/a.md":       "",
+	}, "assets/img.png")
+}
+
+func TestAddress(t *testing.T) {
+	ix := build(t, addressFixture())
+	cases := []struct {
+		in    string
+		st    links.Status
+		path  string
+		cands []string
+	}{
+		{"Dup", links.Ambiguous, "", []string{"a/Dup.md", "b/Dup.md"}},
+		{"notes/a", links.Ambiguous, "", []string{"Notes/A.md", "notes/a.md"}},
+		{"img.png", links.Unresolved, "", nil},
+		{"assets/img.png", links.Unresolved, "", nil},
+		{"../x", links.Unresolved, "", nil},
+		{"", links.Unresolved, "", nil},
+		{"/a/Dup", links.Resolved, "a/Dup.md", nil},
+		{"Deep Note", links.Resolved, "sub/Deep Note.md", nil},
+		{"home", links.Resolved, "Home.md", nil},
+	}
+	for _, c := range cases {
+		got := ix.Address(c.in)
+		if got.Status != c.st || got.Path != c.path || strings.Join(got.Candidates, ",") != strings.Join(c.cands, ",") || got.Attachment {
+			t.Errorf("Address(%q) = %+v, want status %d path %q candidates %v", c.in, got, c.st, c.path, c.cands)
+		}
+	}
+}
+
+func TestNotePaths(t *testing.T) {
+	ix := build(t, addressFixture())
+	got := ix.NotePaths()
+	want := []string{"Home.md", "Notes/A.md", "a/Dup.md", "b/Dup.md", "notes/a.md", "sub/Deep Note.md"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("NotePaths = %v, want %v", got, want)
+	}
+	if !sort.StringsAreSorted(got) {
+		t.Errorf("NotePaths not sorted: %v", got)
 	}
 }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 
 	"github.com/nemesis312/obsidian-mcp/internal/index"
 	"github.com/nemesis312/obsidian-mcp/internal/links"
@@ -80,15 +79,6 @@ func jsonResult(v any) *mcp.CallToolResult {
 	return mcp.NewToolResultText(string(data))
 }
 
-// canonicalOr labels a result with the canonical note path, falling back to
-// the argument with "/" separators.
-func canonicalOr(v *vault.Vault, arg string) string {
-	if c, ok := v.NotePath(arg); ok {
-		return c
-	}
-	return strings.ReplaceAll(arg, `\`, "/")
-}
-
 // get_backlinks - Get all notes linking to a note
 func registerGetBacklinks(s *server.MCPServer, v *vault.Vault) {
 	s.AddTool(mcp.Tool{
@@ -99,7 +89,7 @@ func registerGetBacklinks(s *server.MCPServer, v *vault.Vault) {
 			Properties: map[string]interface{}{
 				"path": map[string]interface{}{
 					"type":        "string",
-					"description": "Path to the note",
+					"description": notePathDesc,
 				},
 			},
 			Required: []string{"path"},
@@ -110,7 +100,7 @@ func registerGetBacklinks(s *server.MCPServer, v *vault.Vault) {
 			return mcp.NewToolResultError(fmt.Sprintf("invalid path: %v", err)), nil
 		}
 
-		edges, err := v.GetBacklinks(path)
+		note, edges, err := v.NoteBacklinks(path)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -123,7 +113,7 @@ func registerGetBacklinks(s *server.MCPServer, v *vault.Vault) {
 			Path      string         `json:"path"`
 			Backlinks []backlinkJSON `json:"backlinks"`
 			Count     int            `json:"count"`
-		}{canonicalOr(v, path), backlinks, len(backlinks)}), nil
+		}{note, backlinks, len(backlinks)}), nil
 	})
 }
 
@@ -137,7 +127,7 @@ func registerGetOutgoingLinks(s *server.MCPServer, v *vault.Vault) {
 			Properties: map[string]interface{}{
 				"path": map[string]interface{}{
 					"type":        "string",
-					"description": "Path to the note",
+					"description": notePathDesc,
 				},
 			},
 			Required: []string{"path"},
@@ -148,7 +138,7 @@ func registerGetOutgoingLinks(s *server.MCPServer, v *vault.Vault) {
 			return mcp.NewToolResultError(fmt.Sprintf("invalid path: %v", err)), nil
 		}
 
-		edges, err := v.GetOutgoingLinks(path)
+		note, edges, err := v.NoteOutgoingLinks(path)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -161,7 +151,7 @@ func registerGetOutgoingLinks(s *server.MCPServer, v *vault.Vault) {
 			Path  string        `json:"path"`
 			Links []outLinkJSON `json:"links"`
 			Count int           `json:"count"`
-		}{canonicalOr(v, path), out, len(out)}), nil
+		}{note, out, len(out)}), nil
 	})
 }
 
@@ -197,7 +187,7 @@ func registerGetLinkedMentions(s *server.MCPServer, v *vault.Vault) {
 			Properties: map[string]interface{}{
 				"path": map[string]interface{}{
 					"type":        "string",
-					"description": "Path to the note",
+					"description": notePathDesc,
 				},
 			},
 			Required: []string{"path"},
@@ -208,13 +198,13 @@ func registerGetLinkedMentions(s *server.MCPServer, v *vault.Vault) {
 			return mcp.NewToolResultError(fmt.Sprintf("invalid path: %v", err)), nil
 		}
 
-		mentions, err := v.GetLinkedMentions(path)
+		note, mentions, err := v.NoteLinkedMentions(path)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("failed to get mentions: %v", err)), nil
 		}
 
 		data, _ := json.MarshalIndent(map[string]interface{}{
-			"path":     path,
+			"path":     note,
 			"mentions": mentions,
 			"count":    len(mentions),
 		}, "", "  ")
