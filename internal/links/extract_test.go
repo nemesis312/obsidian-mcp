@@ -31,7 +31,10 @@ func TestExtract(t *testing.T) {
 		{"markdown local image", "![alt](local.png)", []links.Ref{{Kind: links.KindMarkdown, Raw: "![alt](local.png)", Target: "local.png", Alias: "alt"}}},
 		{"http skipped", "[t](https://x.y)", nil},
 		{"mailto skipped", "[t](mailto:a@b)", nil},
-		{"anchor skipped", "[t](#local)", nil},
+		{"markdown same note heading", "[t](#local)", []links.Ref{{Kind: links.KindMarkdown, Raw: "[t](#local)", Heading: "local", Alias: "t"}}},
+		{"markdown same note block", "[t](#^b1)", []links.Ref{{Kind: links.KindMarkdown, Raw: "[t](#^b1)", Block: "b1", Alias: "t"}}},
+		{"markdown same note encoded", "[t](<#My%20Sec>)", []links.Ref{{Kind: links.KindMarkdown, Raw: "[t](<#My%20Sec>)", Heading: "My Sec", Alias: "t"}}},
+		{"markdown bare anchor skipped", "[t](#)", nil},
 		{"external image skipped", "![alt](https://x/i.png)", nil},
 		{"frontmatter", "---\nrelated: \"[[FM1]]\"\ntags:\n  - \"[[FM2]]\"\n---\n", []links.Ref{
 			{Kind: links.KindWikilink, Raw: "[[FM1]]", Target: "FM1", Offset: 14},

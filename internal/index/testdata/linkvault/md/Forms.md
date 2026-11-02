@@ -1,4 +1,4 @@
-Markdown link forms, all relative to this note first:
+Markdown link forms (they resolve like wikilinks; only `./` and `../` are relative to this note):
 
 - [plain](Peer.md)
 - [angle](<Spaced Note.md>)

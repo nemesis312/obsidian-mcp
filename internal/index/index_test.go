@@ -666,14 +666,75 @@ func TestManyDuplicateBasenamesAndRefs(t *testing.T) {
 	}
 }
 
+// Path-suffix links ("[[c/index]]") against many notes sharing the suffix
+// cost one resolve per distinct target, not refs x candidates.
+func TestManySuffixCandidatesAndRefs(t *testing.T) {
+	const k, refs = 1000, 200_000
+	notes := map[string]string{"big.md": strings.Repeat("[[c/index]] [[C/Index.md]] ", refs/2)}
+	for i := 0; i < k; i++ {
+		notes[fmt.Sprintf("d%d/c/index.md", i)] = ""
+		notes[fmt.Sprintf("d%d/x/index.md", i)] = ""
+	}
+
+	start := time.Now()
+	ix := build(t, newFake(notes))
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("Build took %v, want under 2s", d)
+	}
+	out, err := ix.Outgoing("big.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 1 || !out[0].Ambiguous || out[0].To != "d0/c/index.md" {
+		t.Fatalf("Outgoing(big.md) = %+v, want one ambiguous edge to d0/c/index.md", out)
+	}
+}
+
+// "[[./Ghost]]" in a folder and "[[Ghost]]" at the root are one ghost.
+func TestRelativeGhostSharesKey(t *testing.T) {
+	ix := build(t, newFake(map[string]string{"A.md": "[[Ghost]]", "x/B.md": "[[./Ghost]]"}))
+	nodes, edges := ix.Graph()
+	ghosts := 0
+	for _, n := range nodes {
+		if n.Kind == index.NodeGhost {
+			ghosts++
+		}
+	}
+	if ghosts != 1 || len(edges) != 2 || edges[0].To != "ghost" || edges[1].To != "ghost" {
+		t.Fatalf("nodes %+v edges %+v, want both edges to one ghost \"ghost\"", nodes, edges)
+	}
+}
+
 // equivalentSpellings returns n distinct spellings of the wikilink target
-// "index" that Resolve treats alike, built from "./" and "./ " prefixes. Each
-// differs from the others after links.Key, so only the normalization Resolve
-// applies can tell they are the same.
+// "index" that Resolve treats alike, built from "x/../" and "x /../"
+// prefixes that path cleaning removes. Each differs from the others after
+// links.Key, so only the normalization Resolve applies can tell they are the
+// same. They are not "./" relative targets, so they still go through the
+// path-suffix match and its many candidates.
 func equivalentSpellings(n int) []string {
 	out := make([]string, 0, n)
 	for i := 0; i < n; i++ {
 		var sb strings.Builder
+		for b := 0; i>>b > 0; b++ {
+			if i&(1<<b) != 0 {
+				sb.WriteString("x /../")
+			} else {
+				sb.WriteString("x/../")
+			}
+		}
+		sb.WriteString("index")
+		out = append(out, sb.String())
+	}
+	return out
+}
+
+// relativeSpellings returns n distinct spellings of the relative target
+// "./index", built from "./" and "./ " prefixes, as in "[[././index]]".
+func relativeSpellings(n int) []string {
+	out := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		var sb strings.Builder
+		sb.WriteString("./")
 		for b := 0; i>>b > 0; b++ {
 			sb.WriteString("./")
 			if i&(1<<b) != 0 {
@@ -684,6 +745,39 @@ func equivalentSpellings(n int) []string {
 		out = append(out, sb.String())
 	}
 	return out
+}
+
+// Relative spellings ("[[././index]]") of one target collapse to one ref and
+// one edge, resolved in the source folder only.
+func TestRelativeSpellingsBounded(t *testing.T) {
+	const k, n = 1000, 20_000
+	variants := relativeSpellings(n)
+	seen := map[string]bool{}
+	var sb strings.Builder
+	for _, v := range variants {
+		if seen[v] {
+			t.Fatalf("spelling %q repeats", v)
+		}
+		seen[v] = true
+		sb.WriteString("[[" + v + "]] ")
+	}
+	notes := map[string]string{"d7/big.md": sb.String()}
+	for i := 0; i < k; i++ {
+		notes[fmt.Sprintf("d%d/index.md", i)] = ""
+	}
+
+	start := time.Now()
+	ix := build(t, newFake(notes))
+	if d := time.Since(start); d > time.Second {
+		t.Errorf("Build took %v, want under 1s", d)
+	}
+	out, err := ix.Outgoing("d7/big.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 1 || out[0].Ambiguous || out[0].To != "d7/index.md" || out[0].Raw != "[["+variants[0]+"]]" {
+		t.Fatalf("Outgoing(d7/big.md) = %+v, want one edge to d7/index.md", out)
+	}
 }
 
 // Equivalent spellings of one target (S1 bypass): a note holding 20k
@@ -754,10 +848,10 @@ func TestEquivalentSpellingsAcrossNotesMemoized(t *testing.T) {
 	}
 }
 
-// A target that is only "/" or "./" names nothing: no edge, no ghost node
-// with an empty id.
+// A target that is only "/" or "./", or that cleans to "." or ".." only,
+// names nothing: no edge, no ghost node with an empty id or a dots id.
 func TestRootOnlyTargetHasNoEdge(t *testing.T) {
-	ix := build(t, newFake(map[string]string{"A.md": "[[/]] [[./]] [r](/) [[B]]", "B.md": ""}))
+	ix := build(t, newFake(map[string]string{"A.md": "[[/]] [[./]] [r](/) [[a/..]] [[.]] [[../]] [[..]] ![[../..]] [d](x/../..) [[B]]", "B.md": "", "x/C.md": "[[../]] [u](..)"}))
 	out, err := ix.Outgoing("A.md")
 	if err != nil {
 		t.Fatal(err)
@@ -767,7 +861,7 @@ func TestRootOnlyTargetHasNoEdge(t *testing.T) {
 	}
 	nodes, edges := ix.Graph()
 	for _, n := range nodes {
-		if n.ID == "" {
+		if n.ID == "" || n.ID == "." || n.ID == ".." {
 			t.Fatalf("graph node with empty id: %+v", nodes)
 		}
 	}

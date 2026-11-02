@@ -17,7 +17,13 @@ func TestGhostKey(t *testing.T) {
 		"a//b/../Ghost.md": "a/ghost",
 		"missing.png":      "missing.png",
 		"../../outside.md": "../../outside",
+		"./../x/Ghost":     "../x/ghost",
+		"x/../../outside":  "../outside",
+		"./sub/Ghost":      "sub/ghost",
 		"café":             "café",
+		"a/..":             "",
+		"..":               "",
+		"../":              "",
 	} {
 		if got := links.GhostKey(in); got != want {
 			t.Errorf("GhostKey(%q) = %q, want %q", in, got, want)
@@ -32,10 +38,24 @@ func TestNormalizeTarget(t *testing.T) {
 		rooted bool
 	}{
 		{"Index", "index", false},
-		{" ./ ./INDEX.md ", "index.md", false},
-		{"././index", "index", false},
+		{" ./ ./INDEX.md ", "./index.md", false},
+		{"././index", "./index", false},
 		{"/Index", "index", true},
-		{"./ /a//b/../Index", "a/index", true},
+		{"./ /a//b/../Index", "./a/index", false},
+		{"../a/Index", "./../a/index", false},
+		{"./../a/Index", "./../a/index", false},
+		{"x/../../A", "../a", false},
+		{"a/./b/../Index", "a/index", false},
+		{"./a/..", "", false},
+		{"a/..", "", false},
+		{".", "", false},
+		{"..", "", false},
+		{"../", "", false},
+		{"../..", "", false},
+		{"./../..", "", false},
+		{"a/../../..", "", false},
+		{"/..", "", true},
+		{"../x", "./../x", false},
 		{"/", "", true},
 		{"./", "", false},
 		{"", "", false},
@@ -49,15 +69,35 @@ func TestNormalizeTarget(t *testing.T) {
 	}
 }
 
+// "./x", "x" and "/x" resolve differently, so they never share a key.
+func TestNormalizeTargetKeepsAnchors(t *testing.T) {
+	type id struct {
+		key    string
+		rooted bool
+	}
+	seen := map[id]string{}
+	for _, s := range []string{"Index", "./Index", "/Index", "../Index", "x/../../Index"} {
+		k, rooted := links.NormalizeTarget(s)
+		if prev, ok := seen[id{k, rooted}]; ok {
+			t.Errorf("NormalizeTarget(%q) = NormalizeTarget(%q) = %q, %v", s, prev, k, rooted)
+		}
+		seen[id{k, rooted}] = s
+	}
+}
+
 // Spellings with the same normalized form resolve alike, for every kind.
 func TestNormalizedSpellingsResolveAlike(t *testing.T) {
 	r := links.NewResolver([]string{"x/Index.md", "y/z/index.md", "x/Rel.md"}, []string{"x/pic.png"})
 	groups := [][]string{
-		{"Index", "./INDEX", "./ ./index", " ././InDeX"},
-		{"Index.md", "./index.MD", "./ a/../INDEX.md"},
-		{"Rel.md", "./rel.MD", "./ y/../Rel.md"},
+		{"Index", " INDEX", "a/../index", "a /../InDeX"},
+		{"./Index", "./INDEX", "./ ./index", " ././InDeX", "./a/../index"},
+		{"Index.md", "index.MD", "a/../INDEX.md"},
+		{"Rel.md", "rel.MD", "y/../Rel.md"},
+		{"./Rel.md", "./rel.MD", "./ y/../Rel.md"},
+		{"../x/Rel.md", "./../x/rel.MD", "./ ../y/../x/Rel.md"},
 		{"/x/Rel", "/./x/REL", "//x/rel"},
-		{"pic.png", "./PIC.png", "./ ./pic.PNG"},
+		{"pic.png", "PIC.png", "b/../pic.PNG"},
+		{"./pic.png", "./PIC.png", "./ ./pic.PNG"},
 	}
 	for _, g := range groups {
 		for _, kind := range []links.Kind{links.KindWikilink, links.KindEmbed, links.KindMarkdown} {
