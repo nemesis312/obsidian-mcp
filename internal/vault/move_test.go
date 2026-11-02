@@ -699,3 +699,72 @@ func BenchmarkMovePlan5k(b *testing.B) {
 		}
 	}
 }
+
+func TestMoveAbortsWhenOwnLinksUnsafe(t *testing.T) {
+	v := newTestVault(t)
+	// The moved note's self link would become [[x`y]] after the backtick
+	// already on its line: inline code, no link.
+	writeRaw(t, v, "Old.md", "a ` b [[Old]]\n")
+	writeRaw(t, v, "L.md", "[[Old]]\n")
+	// The guard's lock file is not a note write: create it beforehand.
+	unlock, err := v.guard.lock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	unlock()
+	old := snapshotTree(t, v.Root())
+	for _, dry := range []bool{true, false} {
+		_, err := v.MoveNote(context.Background(), "Old.md", "x`y.md", "", dry)
+		want := "cannot move Old.md: its own links could not be rewritten safely"
+		if err == nil || err.Error() != want {
+			t.Errorf("dry %v: err = %v, want %q", dry, err, want)
+		}
+	}
+	if got := snapshotTree(t, v.Root()); !reflect.DeepEqual(got, old) {
+		t.Errorf("the refused move changed the vault")
+	}
+}
+
+func TestMoveRefusesSymlinkSource(t *testing.T) {
+	v := newTestVault(t)
+	writeRaw(t, v, "real.md", "real\n")
+	if err := os.Symlink("real.md", filepath.Join(v.Root(), "link.md")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	for _, dry := range []bool{true, false} {
+		_, err := v.MoveNote(context.Background(), "link.md", "moved.md", "", dry)
+		want := "cannot move link.md: it is a symlink; move its target instead"
+		if err == nil || err.Error() != want {
+			t.Errorf("dry %v: err = %v, want %q", dry, err, want)
+		}
+	}
+	if info, err := os.Lstat(filepath.Join(v.Root(), "link.md")); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("link.md is no longer a symlink: %v", err)
+	}
+	if v.NoteExists("moved.md") {
+		t.Error("moved.md was created")
+	}
+}
+
+func TestMoveRefusesLinkUnsafeName(t *testing.T) {
+	v := newTestVault(t)
+	writeRaw(t, v, "a.md", "a\n")
+	cases := map[string]string{
+		"a#b":      "a#b.md",
+		"a|b.md":   "a|b.md",
+		"x/[y]":    "x/[y].md",
+		"p]q":      "p]q.md",
+		"a^b":      "a^b.md",
+		"f#g/n.md": "f#g/n.md",
+	}
+	for dst, norm := range cases {
+		_, err := v.MoveNote(context.Background(), "a.md", dst, "", false)
+		want := "invalid destination name: " + norm + " contains a character Obsidian links cannot use (# | [ ] ^)"
+		if err == nil || err.Error() != want {
+			t.Errorf("MoveNote to %q: err = %v, want %q", dst, err, want)
+		}
+	}
+	if got := dirEntries(t, v.Root()); !reflect.DeepEqual(got, []string{"a.md"}) {
+		t.Errorf("vault holds %v, want only a.md", got)
+	}
+}

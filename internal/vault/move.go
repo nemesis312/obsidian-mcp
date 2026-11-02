@@ -3,6 +3,7 @@ package vault
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -85,8 +86,9 @@ type plannedNote struct {
 // run takes no guard and writes nothing, so its plan can be stale by the
 // time a real move runs.
 //
-// The source is moved by its own name: a symlinked note is replaced by a
-// regular file at dest and the symlink is removed, its target kept.
+// A symlinked source is refused, as is a destination whose name holds a
+// character Obsidian links cannot use (# | [ ] ^), and a note whose own
+// links could not be rewritten safely: nothing is written then.
 func (v *Vault) MoveNote(ctx context.Context, arg, dest, expected string, dryRun bool) (MoveResult, error) {
 	if err := ctx.Err(); err != nil {
 		return MoveResult{}, err
@@ -177,8 +179,15 @@ func (v *Vault) moveDestination(dest string) (string, error) {
 	if !ok {
 		return "", errInvalid
 	}
+	if strings.ContainsAny(out, linkUnsafeChars) {
+		return "", fmt.Errorf("invalid destination name: %s contains a character Obsidian links cannot use (# | [ ] ^)", out)
+	}
 	return out, nil
 }
+
+// linkUnsafeChars cannot appear in a note name that links point to: a link
+// would read them as a heading, alias, bracket or block reference.
+const linkUnsafeChars = "#|[]^"
 
 // planMove reads the note and every linker, checks the version and the
 // destination, and computes every rewrite. It writes nothing.
@@ -212,6 +221,11 @@ func (v *Vault) planMove(r *os.Root, arg, src, dst, expected string) (*movePlan,
 	if err != nil {
 		return nil, err
 	}
+	if info, err := r.Lstat(p.srcRel); err != nil {
+		return nil, notFoundAs(arg, v.fsError("move note", src, err))
+	} else if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("cannot move %s: it is a symlink; move its target instead", src)
+	}
 	if p.dstRel, err = v.rootRel(safeDst); err != nil {
 		return nil, err
 	}
@@ -236,7 +250,7 @@ func (v *Vault) planMove(r *os.Root, arg, src, dst, expected string) (*movePlan,
 	// The moved note, from its fresh content.
 	p.content, p.original = content, content
 	if out, edits, ok := m.rewrite(src, dst, content); !ok {
-		p.res.Failed = append(p.res.Failed, RenameFailure{Path: dst, Error: errLinkMeaning})
+		return nil, fmt.Errorf("cannot move %s: its own links could not be rewritten safely", src)
 	} else if len(edits) > 0 {
 		p.content = out
 		p.res.Updated = append(p.res.Updated, LinkChange{Path: dst, Links: edits})
