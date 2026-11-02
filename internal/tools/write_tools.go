@@ -342,10 +342,12 @@ func registerMoveNote(s *server.MCPServer, v *vault.Vault) {
 		Name: "move_note",
 		Description: "Move or rename a single .md note and keep the vault's links working. " +
 			"Rewrites every link form the move affects, in other notes and in the moved note itself: wikilinks, embeds, markdown links, and links with an alias, a #heading or a ^block fragment keep their alias, fragment and form. " +
-			"A ghost link that starts resolving because of the move is reported in warnings, not rewritten. " +
-			"The destination is a vault-relative path (.md is optional; missing folders are created). The move refuses a destination that already exists. A case-only rename is allowed. " +
-			"Failures are per file: a note whose links could not be updated is listed in failed, the move itself is not rolled back. " +
-			"Use dry_run=true to preview: it returns the same result, takes no lock and writes nothing. expected_version is optional.",
+			"A ghost link that starts resolving because of the move (to the moved note, or for the moved note's own ./ links to another note) is reported in warnings, not rewritten. Links in .canvas files are not rewritten. " +
+			"The destination is a vault-relative path (.md is optional; missing folders are created; an existing folder keeps its on-disk spelling). A case-only rename is allowed. " +
+			"The move is refused, with nothing written, when: the destination already exists; the source is a symlink; a folder on the destination path is a symlink; the destination is in a protected folder (.git, .obsidian, .obsidian-mcp); its name contains # | [ ] ^, a control character, or a leading or trailing space; or any note's links (the moved note's included) could not be rewritten safely or its frontmatter would break. " +
+			"A note that fails to write after the move started is listed in failed; the move is not rolled back. " +
+			"Use dry_run=true to preview: it returns the same result, lists every note that could not be rewritten in failed, takes no lock and writes nothing. " +
+			"expected_version is optional, except when the destination is inside a hidden folder (a folder name starting with '.'), where it is required.",
 		InputSchema: mcp.ToolInputSchema{
 			Type: "object",
 			Properties: map[string]interface{}{
@@ -359,7 +361,7 @@ func registerMoveNote(s *server.MCPServer, v *vault.Vault) {
 				},
 				"expected_version": map[string]interface{}{
 					"type":        "string",
-					"description": "Version from get_note. Optional: if given and the note changed since, the move is refused with the current version.",
+					"description": "Version from get_note. Optional, but required when new_path is inside a hidden folder: if given and the note changed since, the move is refused with the current version.",
 				},
 				"dry_run": map[string]interface{}{
 					"type":        "boolean",

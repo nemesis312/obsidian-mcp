@@ -89,7 +89,7 @@ Every note has a `version`: `sha256:` plus 16 hex characters of the hash of its 
 | --- | --- | --- |
 | `patch_note`, `delete_note` | Required. Without it the call is refused (`expected_version is required ...`). If the note changed, the call is refused with `version conflict: ... current version: sha256:...`. | `patch_note`: `{"success":true,"path":"n.md","version":"sha256:..."}`. `delete_note`: `{"success":true,"path":"n.md"}`. |
 | `edit_section` | Required for `mode=replace`, optional for `append` and `prepend`. Checked the same way. | `{"success":true,"path":"n.md","version":"sha256:..."}` |
-| `move_note` | Optional: a move does not change the note's content. Checked the same way when given. | See [Moving and renaming notes](#moving-and-renaming-notes). |
+| `move_note` | Optional: a move does not change the note's content. Required when `new_path` is inside a hidden folder (a folder name starting with `.`). Checked the same way when given. | See [Moving and renaming notes](#moving-and-renaming-notes). |
 | `append_to_note`, `update_frontmatter` | Optional. When given, it is checked the same way. | `{"success":true,"path":"n.md","version":"sha256:..."}` |
 | `create_note` | Not used. `path` is a path, not a name; a leading `/` means the vault root. | `{"success":true,"path":"n.md","version":"sha256:..."}` |
 
@@ -112,8 +112,8 @@ Error messages that changed: `append_to_note`, `patch_note`, `update_frontmatter
 8. **patch_note** - Replace note content
 9. **update_frontmatter** - Update frontmatter fields (preserves body)
 10. **delete_note** - Delete a note
-21. **edit_section** - Replace, append to or prepend to one section of a note
-22. **move_note** - Move or rename a note and rewrite the links the move changes
+11. **edit_section** - Replace, append to or prepend to one section of a note
+12. **move_note** - Move or rename a note and rewrite the links the move changes
 
 #### Section edits
 
@@ -121,9 +121,11 @@ Error messages that changed: `append_to_note`, `patch_note`, `update_frontmatter
 
 #### Moving and renaming notes
 
-`move_note` takes `path`, `new_path`, `expected_version` (optional) and `dry_run` (optional, default `false`). It moves one `.md` note; a rename is a move within the same folder. `new_path` is vault-relative, `.md` is optional and missing folders are created. A case-only rename (`note.md` to `Note.md`) is allowed.
+`move_note` takes `path`, `new_path`, `expected_version` (optional, except for a hidden destination folder) and `dry_run` (optional, default `false`). It moves one `.md` note; a rename is a move within the same folder. `new_path` is vault-relative, `.md` is optional and missing folders are created. A folder that already exists keeps its spelling on disk: on macOS or Windows, `Projects/x` moves the note into an existing `projects/`, and the result reports `projects/x.md`. A case-only rename (`note.md` to `Note.md`) is allowed. The moved note keeps its file mode; extended attributes and ACLs are not carried over.
 
-The move rewrites every link it changes, in other notes and in the moved note's own relative links: wikilinks, embeds and markdown links, keeping each link's alias, `#heading` or `#^block` fragment and form. A name-only link such as `[[note]]` stays name-only while it is unambiguous. A link that starts resolving to a different note because of the tie-break rules is rewritten too. A ghost link that starts resolving to the moved note is reported in `warnings` and left as written.
+The move rewrites every link it changes, in other notes and in the moved note's own relative links: wikilinks, embeds and markdown links, in the body and in the frontmatter, keeping each link's alias, `#heading` or `#^block` fragment and form. A name-only link such as `[[note]]` stays name-only while it is unambiguous. A link that starts resolving to a different note because of the tie-break rules is rewritten too. References inside `.canvas` files are not rewritten.
+
+A ghost link (one that resolved to nothing) that starts resolving because of the move is left as written and reported in `warnings` as `<note>: <link> now resolves to <path>`. Usually `<path>` is the moved note: `[[New Name]]` written before `New Name.md` existed. It can also be another note, when one of the moved note's own `./` or `../` links was a ghost in the old folder and matches a note in the new one.
 
 ```json
 {
@@ -138,17 +140,26 @@ The move rewrites every link it changes, in other notes and in the moved note's 
 }
 ```
 
-- **Refusals.** The move is refused, before anything is written, when the destination exists (`destination already exists`), when `expected_version` is stale, when the destination is a protected folder, not a `.md` file, absolute, or contains `#`, `|`, `[`, `]` or `^`, when the note is a symlink, or when the moved note's own links cannot be rewritten safely.
+- **Refusals.** The move is refused, before anything is written, when:
+  - the destination exists (`destination already exists`);
+  - `expected_version` is stale, or missing for a destination inside a hidden folder (`expected_version is required to move a note into a hidden folder ...`);
+  - the destination is in a protected folder (`.git`, `.obsidian`, `.obsidian-mcp`), is not a `.md` file, or is absolute;
+  - a folder on the destination path is a symlink (`a folder in the path is a symlink`);
+  - the destination name contains `#`, `|`, `[`, `]` or `^`, a control character, or a leading or trailing space in a folder or file name: no link could point to it;
+  - the note is a symlink (move its target instead);
+  - the moved note's own links cannot be rewritten safely (the error names the first such link), or the rewrite would break its frontmatter;
+  - a linking note could not be rewritten safely: a rewritten link would not resolve where it should once read back, or the note's YAML frontmatter would no longer parse or would lose a key (for example `up: '[[Old]]'` and a new name with an apostrophe). The error names up to 10 such notes; a dry run lists them all in `failed`.
 - **Dry run.** `dry_run=true` returns the same result without taking the write lock and without writing anything. Paths in it are vault-relative.
-- **Per-file failures.** The note moves first, under one write lock. A note whose links could not be updated is listed in `failed`, with the reason; the move is not rolled back and the other notes are still updated.
+- **Planning and the lock.** The move plans without the write lock, then takes it, re-reads the note and every linking note, and plans again whatever changed in between, including a note that started linking to it. Edits made meanwhile are kept, and a note changed since `expected_version` is a version conflict. Cancelling the request stops the move only until the note is written; after that the move finishes, so no link is left pointing at the old path.
+- **Per-file failures.** The note moves first. A linking note that cannot be written (an I/O error) is listed in `failed` with the reason; the move is not rolled back and the other notes are still updated.
 
 ### Graph/Link Tools (5)
 
-11. **get_backlinks** - Find notes linking to target
-12. **get_outgoing_links** - Get all links from note: wikilinks, embeds and markdown links
-13. **get_orphaned_notes** - Find notes with no incoming or outgoing links
-14. **get_linked_mentions** - Find notes mentioning target name
-15. **get_link_graph** - Build full vault link graph
+13. **get_backlinks** - Find notes linking to target
+14. **get_outgoing_links** - Get all links from note: wikilinks, embeds and markdown links
+15. **get_orphaned_notes** - Find notes with no incoming or outgoing links
+16. **get_linked_mentions** - Find notes mentioning target name
+17. **get_link_graph** - Build full vault link graph
 
 Links are resolved the way Obsidian does it; see [How links are resolved](#how-links-are-resolved). Paths in results are vault-relative and use `/` on every OS.
 
@@ -163,11 +174,11 @@ Links are resolved the way Obsidian does it; see [How links are resolved](#how-l
 
 ### Tag/Canvas Tools (5)
 
-16. **list_all_tags** - List all unique tags
-17. **get_notes_by_tag** - Find notes with specific tag
-18. **rename_tag** - Rename tag across all notes
-19. **list_canvases** - List all canvas files
-20. **get_canvas** - Read canvas file content
+18. **list_all_tags** - List all unique tags
+19. **get_notes_by_tag** - Find notes with specific tag
+20. **rename_tag** - Rename tag across all notes
+21. **list_canvases** - List all canvas files
+22. **get_canvas** - Read canvas file content
 
 ## How links are resolved
 
@@ -295,12 +306,12 @@ Limits:
 ## Security
 
 - **Vault confinement**: paths that escape the vault, including via symlinks, are rejected.
-- **Protected directories**: `.git/`, `.obsidian/` and `.obsidian-mcp/` are blocked at any depth: no tool lists, reads or writes them. Spellings Windows treats as the same folder are blocked too: a name with trailing dots or spaces (`.git.`) on every OS, and on Windows any path segment that contains `:`, ends in a dot or space, or is the 8.3 short name of a protected folder (`GIT~1`, `OBSIDI~1`); other names with `~` and a digit, such as `draft~2.md`, work.
+- **Protected directories**: `.git/`, `.obsidian/` and `.obsidian-mcp/` are blocked at any depth: no tool lists, reads or writes them. Spellings Windows treats as the same folder are blocked too: a name with trailing dots or spaces (`.git.`) on every OS, as is the 8.3 short name of a protected folder (`GIT~1`, `OBSIDI~1`), and on Windows any path segment that contains `:` or ends in a dot or space; other names with `~` and a digit, such as `draft~2.md`, work.
 - **Lock directory**: the server creates `.obsidian-mcp/write.lock` in the vault on the first write (see [Concurrency](#concurrency)). It is created through the vault root, so a symlink or junction at `.obsidian-mcp` cannot redirect it outside the vault; if `.obsidian-mcp` is not a real directory, or `write.lock` is not a regular file (a symlink included), writes are refused. The folder is created with mode `0700` and the lock file with `0600`, so other users on the machine cannot open the lock and block writes; a folder created by an earlier version keeps its mode. The lock file is never listed as a note. Add `.obsidian-mcp/` to `.gitignore` if the vault is a git repository.
 - **Lock behavior**: the lock is advisory and serializes obsidian-mcp writers only; a write waits at most 5 seconds for it. It does not protect against other programs, and it is not reliable on NFS or SMB shares.
 - **Markdown-only writes**: `create_note`, `append_to_note`, `edit_section`, `patch_note`, `update_frontmatter`, `move_note` and `delete_note` only operate on `.md` files.
 - **Writes go through `os.Root`**: every write, including each file `move_note` rewrites, is done through a Go `os.Root` opened on the vault, so a path or symlink cannot make a write land outside it.
-- **Move destinations**: `move_note` validates the destination before any write, never overwrites a file, and refuses a symlinked source.
+- **Move destinations**: `move_note` validates the destination before any write and again under the write lock, never overwrites a file, and refuses a symlinked source and a destination whose folders include a symlink. Known residual: a local process that replaces a vault folder with a relative symlink into `.obsidian` between that last check and the write can still redirect the moved note there; the write stays inside the vault.
 - **Symlinked notes**: a note that is a symlink is written through to its target, which must be a `.md` file inside the vault. `delete_note` on such a note deletes the target file and leaves the link in place, now dangling.
 - **Canvas reads**: `get_canvas` reads `.canvas` files only (the symlink target too), and only regular files, so a FIFO cannot block it.
 - **Safe tag renames**: `rename_tag` also renames nested tags (`#a/b`), skips code blocks, and reports per-file failures.

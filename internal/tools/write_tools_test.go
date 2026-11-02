@@ -423,3 +423,16 @@ func TestMoveNoteTool(t *testing.T) {
 		t.Fatalf("existing destination: isErr=%v out=%s", isErr, out)
 	}
 }
+
+// A move into a hidden folder needs expected_version, like delete_note.
+func TestMoveNoteHiddenFolderNeedsVersion(t *testing.T) {
+	e := newEnv(t)
+	e.write("n.md", "n\n")
+	out, isErr := e.call("move_note", map[string]any{"path": "n.md", "new_path": ".archive/n"})
+	if !isErr || !strings.Contains(out, "expected_version is required") || !strings.Contains(out, ".archive") {
+		t.Fatalf("move_note into .archive = %q, isErr=%v", out, isErr)
+	}
+	if !e.exists("n.md") {
+		t.Error("n.md moved")
+	}
+}
