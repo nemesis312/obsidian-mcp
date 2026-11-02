@@ -265,8 +265,8 @@ func (v *Vault) indexRemove(norm string) {
 }
 
 // writeNoteLocked writes content to the note at path (created or
-// overwritten) atomically. The caller holds the write guard and updates the
-// index after releasing it.
+// overwritten) atomically, through an os.Root on the vault. The caller holds
+// the write guard and updates the index after releasing it.
 func (v *Vault) writeNoteLocked(path, content string) error {
 	norm, err := NormalizeNotePath(path)
 	if err != nil {
@@ -277,11 +277,21 @@ func (v *Vault) writeNoteLocked(path, content string) error {
 		return err
 	}
 
-	if err := os.MkdirAll(filepath.Dir(safePath), 0o755); err != nil {
+	rel, err := v.rootRel(safePath)
+	if err != nil {
+		return err
+	}
+	beforeWrite(rel)
+
+	r, err := v.openRoot()
+	if err != nil {
+		return v.fsError("write note", norm, err)
+	}
+	defer r.Close()
+	if err := r.MkdirAll(filepath.Dir(rel), 0o755); err != nil {
 		return v.fsError("create directory for", norm, err)
 	}
-
-	if err := writeFileAtomic(safePath, []byte(content)); err != nil {
+	if err := writeFileAtomic(r, rel, []byte(content)); err != nil {
 		return v.fsError("write note", norm, err)
 	}
 	return nil

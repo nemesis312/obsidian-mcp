@@ -19,16 +19,16 @@ const (
 	shareRetryLimit = 2 * time.Second
 )
 
-// renameReplace atomically replaces newpath with oldpath, retrying while
-// newpath is held open by another handle.
-func renameReplace(oldpath, newpath string) error {
-	return retryShared(func() error { return os.Rename(oldpath, newpath) })
+// renameReplace atomically replaces newRel with oldRel, through r, retrying
+// while newRel is held open by another handle.
+func renameReplace(r *os.Root, oldRel, newRel string) error {
+	return retryShared(func() error { return r.Rename(oldRel, newRel) })
 }
 
-// removeFile removes the file at name, retrying while it is held open by
-// another handle.
-func removeFile(name string) error {
-	return retryShared(func() error { return os.Remove(name) })
+// removeFile removes the file at rel, through r, retrying while it is held
+// open by another handle.
+func removeFile(r *os.Root, rel string) error {
+	return retryShared(func() error { return r.Remove(rel) })
 }
 
 // retryShared runs op until it succeeds, fails with an error other than
