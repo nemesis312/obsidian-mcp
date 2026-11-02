@@ -92,11 +92,12 @@ func TestTargetForStyles(t *testing.T) {
 		{"name unique", "Note.md", "md/Peer.md", links.StyleName, false, "Peer"},
 		{"name keep ext", "Note.md", "md/Peer.md", links.StyleName, true, "Peer.md"},
 		{"name self", "md/Peer.md", "Note.md", links.StyleName, false, "Note"},
-		{"name ambiguous but wins tie-break", "Note.md", "a/Dup.md", links.StyleName, false, "Dup"},
+		{"name ambiguous though it wins tie-break", "Note.md", "a/Dup.md", links.StyleName, false, "a/Dup"},
 		{"name ambiguous falls back to suffix", "Note.md", "b/c/Dup.md", links.StyleName, false, "c/Dup"},
 		{"name suffix keep ext", "Note.md", "b/c/Dup.md", links.StyleName, true, "c/Dup.md"},
 		{"name falls back to full path", "Note.md", "b/Dup.md", links.StyleName, false, "b/Dup"},
-		{"name same folder wins", "b/x.md", "b/Dup.md", links.StyleName, false, "Dup"},
+		{"name same folder still ambiguous", "b/x.md", "b/Dup.md", links.StyleName, false, "b/Dup"},
+		{"name ambiguous keep ext", "b/x.md", "b/Dup.md", links.StyleName, true, "b/Dup.md"},
 		{"name attachment keeps its ext", "Note.md", "img/pic.png", links.StyleName, false, "pic.png"},
 		{"path", "Note.md", "b/c/Dup.md", links.StylePath, false, "b/c/Dup"},
 		{"path keep ext", "Note.md", "b/c/Dup.md", links.StylePath, true, "b/c/Dup.md"},
@@ -117,7 +118,7 @@ func TestTargetForStyles(t *testing.T) {
 				t.Fatalf("TargetFor(%q -> %q) = %q, want %q", tt.from, tt.to, got, tt.want)
 			}
 			res := r.Resolve(tt.from, links.Ref{Kind: links.KindWikilink, Target: got})
-			if res.Path != tt.to || res.Status == links.Unresolved {
+			if res.Path != tt.to || res.Status != links.Resolved {
 				t.Errorf("%q from %q resolves to %+v, want %q", got, tt.from, res, tt.to)
 			}
 		})

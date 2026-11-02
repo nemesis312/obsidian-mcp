@@ -36,9 +36,10 @@ func StyleOf(ref Ref) LinkStyle {
 // TargetFor returns the target text (no fragment, no alias) to write in
 // `from` so that it resolves to note `to` under r, in the given style.
 //
-//   - StyleName: the basename when it resolves to `to` (Resolved, or
-//     Ambiguous with `to` as the tie-break winner); otherwise the shortest
-//     whole-segment suffix that does; otherwise the full vault path.
+//   - StyleName: the basename when it resolves to `to` unambiguously
+//     (Status Resolved); otherwise the shortest whole-segment suffix that
+//     does; otherwise the full vault path (spec §7.3: a name stays
+//     name-only while it is unambiguous, else it becomes path-qualified).
 //   - StylePath: the full vault path without a leading "/".
 //   - StyleRooted: "/" plus the full vault path.
 //   - StyleRelative: a path relative to from's folder, starting with "./"
@@ -63,7 +64,7 @@ func TargetFor(r *Resolver, from, to string, style LinkStyle, keepExt bool) stri
 	for k := 1; k < len(segs); k++ {
 		cand := strings.Join(segs[len(segs)-k:], "/")
 		res := r.Resolve(from, Ref{Kind: KindWikilink, Target: cand})
-		if res.Status != Unresolved && res.Path == to {
+		if res.Status == Resolved && res.Path == to {
 			return cand
 		}
 	}
