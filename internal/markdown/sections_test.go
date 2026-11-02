@@ -197,15 +197,37 @@ func TestSectionEdits(t *testing.T) {
 			t.Fatalf("got %q", got)
 		}
 	})
-	t.Run("append goes after subsections", func(t *testing.T) {
+	t.Run("append goes after subsections and before trailing blank lines", func(t *testing.T) {
 		h := find(t, lf, "A")
 		got := AppendToSection(lf, h, "tail")
-		want := "intro\n# A\nold a\n## Sub\nsub\n\ntail\n# B\nold b\n"
+		want := "intro\n# A\nold a\n## Sub\nsub\ntail\n\n# B\nold b\n"
 		if got != want {
 			t.Fatalf("got %q want %q", got, want)
 		}
-		if got[:h.End] != lf[:h.End] || !strings.HasSuffix(got, lf[h.End:]) {
-			t.Error("bytes outside the range changed")
+		at := h.End - len("\n")
+		if got[:at] != lf[:at] || !strings.HasSuffix(got, lf[at:]) {
+			t.Error("bytes outside the insertion point changed")
+		}
+	})
+	t.Run("append skips several trailing blank lines", func(t *testing.T) {
+		in := "## A\ntext\n\n\n## B\n"
+		h := find(t, in, "A")
+		if got := AppendToSection(in, h, "new"); got != "## A\ntext\nnew\n\n\n## B\n" {
+			t.Fatalf("got %q", got)
+		}
+	})
+	t.Run("append to section that is only blank lines", func(t *testing.T) {
+		in := "## A\n\n## B\n"
+		h := find(t, in, "A")
+		if got := AppendToSection(in, h, "new"); got != "## A\nnew\n\n## B\n" {
+			t.Fatalf("got %q", got)
+		}
+	})
+	t.Run("append without trailing blank inserts at End", func(t *testing.T) {
+		in := "## A\ntext\n## B\n"
+		h := find(t, in, "A")
+		if got := AppendToSection(in, h, "new"); got != "## A\ntext\nnew\n## B\n" {
+			t.Fatalf("got %q", got)
 		}
 	})
 	t.Run("prepend goes right after the heading", func(t *testing.T) {
@@ -240,7 +262,7 @@ func TestSectionEdits(t *testing.T) {
 	t.Run("crlf keeps crlf on inserted lines", func(t *testing.T) {
 		h := find(t, crlf, "A")
 		got := AppendToSection(crlf, h, "l1\nl2")
-		want := "intro\r\n# A\r\nold a\r\n## Sub\r\nsub\r\n\r\nl1\r\nl2\r\n# B\r\n"
+		want := "intro\r\n# A\r\nold a\r\n## Sub\r\nsub\r\nl1\r\nl2\r\n\r\n# B\r\n"
 		if got != want {
 			t.Fatalf("got %q want %q", got, want)
 		}

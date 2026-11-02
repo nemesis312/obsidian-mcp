@@ -298,10 +298,23 @@ func ReplaceSection(content string, h Heading, body string) string {
 	return insertAt(content, h.BodyStart, text, eol, h.End)
 }
 
-// AppendToSection inserts text at the end of the section, after its subsections.
+// AppendToSection inserts text at the end of the section, after its
+// subsections and before the run of trailing blank lines, so those blank lines
+// still separate the new text from the next heading.
 func AppendToSection(content string, h Heading, text string) string {
 	eol := sectionEOL(content, h)
-	return insertAt(content, h.End, withEOL(text, eol), eol, h.End)
+	at := h.End
+	for at > h.BodyStart && content[at-1] == '\n' {
+		ls := strings.LastIndexByte(content[:at-1], '\n') + 1
+		if ls < h.BodyStart {
+			break
+		}
+		if l := content[ls : at-1]; l != "" && l != "\r" {
+			break
+		}
+		at = ls
+	}
+	return insertAt(content, at, withEOL(text, eol), eol, at)
 }
 
 // PrependToSection inserts text right after the heading line.
