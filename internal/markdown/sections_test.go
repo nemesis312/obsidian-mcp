@@ -39,6 +39,13 @@ func TestHeadings(t *testing.T) {
 		{"skipped level", "# A\n### C\n", []wantHeading{{1, "A", "A"}, {3, "C", "A > C"}}},
 		{"inline code kept in text", "## Use `x`\n", []wantHeading{{2, "Use `x`", "Use `x`"}}},
 		{"crlf", "# A\r\ntext\r\n## B\r\n", []wantHeading{{1, "A", "A"}, {2, "B", "A > B"}}},
+		{"list then dashes is not a heading", "## Tasks\n- a\n- b\n---\n## Next\n", []wantHeading{{2, "Tasks", "Tasks"}, {2, "Next", "Next"}}},
+		{"ordered list then dashes", "# A\n1. a\n2) b\n---\n", []wantHeading{{1, "A", "A"}}},
+		{"quote then dashes is not a heading", "# A\ntext\n> quote\n---\n# B\n", []wantHeading{{1, "A", "A"}, {1, "B", "B"}}},
+		{"table then dashes is not a heading", "# A\n| a | b |\n|---|---|\n| 1 | 2 |\n---\n# B\n", []wantHeading{{1, "A", "A"}, {1, "B", "B"}}},
+		{"multi-line paragraph starting with a list is not a heading", "# A\n* a\nmore\n===\n", []wantHeading{{1, "A", "A"}}},
+		{"paragraph line then dashes is a heading", "# A\npara line\n---\n# B\n", []wantHeading{{1, "A", "A"}, {2, "para line", "A > para line"}, {1, "B", "B"}}},
+		{"emphasis is not a list marker", "*Sub*\n---\n", []wantHeading{{2, "*Sub*", "*Sub*"}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -136,6 +143,14 @@ func TestFindSection(t *testing.T) {
 		}
 		if strings.Contains(err.Error(), "\n") || !strings.Contains(err.Error(), "Nope") {
 			t.Errorf("Error() = %q", err.Error())
+		}
+	})
+	t.Run("trailing separator names no child", func(t *testing.T) {
+		// "A > " has an empty child: it must not match A, nor any child of A.
+		_, err := FindSection(content, "A > ")
+		var nf *SectionNotFoundError
+		if !errors.As(err, &nf) {
+			t.Fatalf("err = %v, want *SectionNotFoundError", err)
 		}
 	})
 	t.Run("not found lists at most 10", func(t *testing.T) {
@@ -261,6 +276,26 @@ func TestSectionEdits(t *testing.T) {
 		}
 		if got[:h.End] != in[:h.End] {
 			t.Error("prefix changed")
+		}
+	})
+	t.Run("crlf append to last section without final newline", func(t *testing.T) {
+		in := "# A\r\nfirst\r\nlast line"
+		h := find(t, in, "A")
+		if got := AppendToSection(in, h, "more\nnext"); got != "# A\r\nfirst\r\nlast line\r\nmore\r\nnext\r\n" {
+			t.Fatalf("got %q", got)
+		}
+		if got := PrependToSection(in, h, "head"); got != "# A\r\nhead\r\nfirst\r\nlast line" {
+			t.Fatalf("prepend got %q", got)
+		}
+		if got := ReplaceSection(in, h, "x"); got != "# A\r\nx\r\n" {
+			t.Fatalf("replace got %q", got)
+		}
+	})
+	t.Run("append after a list followed by a thematic break", func(t *testing.T) {
+		in := "## Tasks\n- a\n- b\n---\n## Next\nx\n"
+		h := find(t, in, "Tasks")
+		if got := AppendToSection(in, h, "- c"); got != "## Tasks\n- a\n- b\n---\n- c\n## Next\nx\n" {
+			t.Fatalf("got %q", got)
 		}
 	})
 	t.Run("append to heading at EOF without newline", func(t *testing.T) {

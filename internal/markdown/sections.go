@@ -77,6 +77,27 @@ func Headings(content string) []Heading {
 			continue
 		}
 		if i+1 < len(lines) && isParagraphLine(m) {
+			// The underline makes a heading only of a plain paragraph: walk
+			// back to the paragraph's first line (after a blank line, a
+			// heading, an underline or thematic break, or the start) and
+			// give up when a line on the way opens a list item, a quote, a
+			// table row or a fence, which would end the paragraph there.
+			plain := true
+			for j := i; j >= 0; j-- {
+				mj := masked[lines[j].start:lines[j].end]
+				if j < i {
+					if _, ok := atxLevel(mj); ok || strings.TrimSpace(mj) == "" || setextLevel(mj) > 0 {
+						break
+					}
+				}
+				if opensBlock(mj) {
+					plain = false
+					break
+				}
+			}
+			if !plain {
+				continue
+			}
 			u := lines[i+1]
 			if level := setextLevel(masked[u.start:u.end]); level > 0 {
 				hs = append(hs, Heading{
@@ -198,6 +219,57 @@ func isParagraphLine(line string) bool {
 		return false
 	}
 	return len(line)-len(strings.TrimLeft(line, " ")) < 4
+}
+
+// opensBlock reports whether a (masked) line, after up to 3 spaces, starts a
+// block other than a paragraph: a list item ("-", "*", "+", "1." or "1)"
+// followed by a space, a tab or the end of the line), a block quote ('>'), a
+// table row ('|'), a code fence or a thematic break.
+func opensBlock(line string) bool {
+	s := strings.TrimLeft(line, " ")
+	if len(line)-len(s) > 3 || s == "" {
+		return false
+	}
+	markerEnd := func(i int) bool { return i == len(s) || s[i] == ' ' || s[i] == '\t' }
+	switch s[0] {
+	case '>', '|':
+		return true
+	case '-', '*', '+':
+		if markerEnd(1) {
+			return true
+		}
+	}
+	if strings.HasPrefix(s, "```") || strings.HasPrefix(s, "~~~") {
+		return true
+	}
+	if isThematicBreak(s) {
+		return true
+	}
+	n := 0
+	for n < len(s) && n < 9 && s[n] >= '0' && s[n] <= '9' {
+		n++
+	}
+	return n > 0 && n < len(s) && (s[n] == '.' || s[n] == ')') && markerEnd(n+1)
+}
+
+// isThematicBreak reports whether s is three or more of the same '-', '*'
+// or '_', with only spaces or tabs between them.
+func isThematicBreak(s string) bool {
+	s = strings.TrimRight(s, " \t")
+	if s == "" || (s[0] != '-' && s[0] != '*' && s[0] != '_') {
+		return false
+	}
+	n := 0
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case s[0]:
+			n++
+		case ' ', '\t':
+		default:
+			return false
+		}
+	}
+	return n >= 3
 }
 
 // FindSection returns the heading that query names. The query matches a

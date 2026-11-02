@@ -119,3 +119,14 @@ func TestEditSectionNotFound(t *testing.T) {
 		t.Fatalf("err = %v, want SectionNotFoundError", err)
 	}
 }
+
+func TestEditSectionListBeforeThematicBreak(t *testing.T) {
+	v := newTestVault(t)
+	writeRaw(t, v, "n.md", "## Tasks\n- a\n- b\n---\n## Next\nx\n")
+	if _, err := v.EditSection("n.md", "Tasks", SectionAppend, "- c", ""); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := v.ReadNote("n.md"); got != "## Tasks\n- a\n- b\n---\n- c\n## Next\nx\n" {
+		t.Errorf("n.md = %q, want - c after the section's last line", got)
+	}
+}
