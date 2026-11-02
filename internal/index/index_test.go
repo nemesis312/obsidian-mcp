@@ -921,3 +921,36 @@ func TestNotePaths(t *testing.T) {
 		t.Errorf("NotePaths not sorted: %v", got)
 	}
 }
+
+func TestRefSets(t *testing.T) {
+	src := newFake(map[string]string{
+		"A.md":     "[[B]] [[B]] [[b.md]] ![[pic.png]] [x](B.md)",
+		"sub/B.md": "No links.",
+	}, "assets/pic.png")
+	ix := build(t, src)
+	notes, atts, refs := ix.RefSets()
+	if strings.Join(notes, ",") != "A.md,sub/B.md" {
+		t.Errorf("notes = %v", notes)
+	}
+	if strings.Join(atts, ",") != "assets/pic.png" {
+		t.Errorf("attachments = %v", atts)
+	}
+	var raws []string
+	for _, r := range refs["A.md"] {
+		raws = append(raws, r.Raw)
+	}
+	// One ref per (kind, normalized target): the second "[[B]]" is dropped.
+	if strings.Join(raws, ",") != "[[B]],[[b.md]],![[pic.png]],[x](B.md)" {
+		t.Errorf("refs[A.md] = %v", raws)
+	}
+	if got, ok := refs["sub/B.md"]; !ok || len(got) != 0 {
+		t.Errorf("refs[sub/B.md] = %v, %v; want an empty entry", got, ok)
+	}
+	// Copies: changing the result does not change the index.
+	refs["A.md"][0].Raw = "changed"
+	notes[0] = "changed"
+	_, _, again := ix.RefSets()
+	if again["A.md"][0].Raw != "[[B]]" {
+		t.Error("RefSets returned the index's own slice")
+	}
+}
