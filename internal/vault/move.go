@@ -230,6 +230,17 @@ func (v *Vault) moveDestination(dest string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// The name checks are lexical and come first, so every OS gives the
+	// same error (Windows would otherwise refuse some of these names in
+	// ValidatePath with its own).
+	if out, ok := v.noteRel(norm); ok {
+		if strings.ContainsAny(out, linkUnsafeChars) {
+			return "", fmt.Errorf("invalid destination name: %s contains a character Obsidian links cannot use (# | [ ] ^)", out)
+		}
+		if unmatchableName(out) {
+			return "", fmt.Errorf("invalid destination name: %q has a name links cannot match (a leading or trailing space, or a control character)", out)
+		}
+	}
 	if _, err := v.resolveNote(norm); err != nil {
 		return "", err
 	}
@@ -239,12 +250,6 @@ func (v *Vault) moveDestination(dest string) (string, error) {
 	}
 	if dir := path.Dir(out); dir != "." {
 		out = v.existingSpelling(dir) + "/" + path.Base(out)
-	}
-	if strings.ContainsAny(out, linkUnsafeChars) {
-		return "", fmt.Errorf("invalid destination name: %s contains a character Obsidian links cannot use (# | [ ] ^)", out)
-	}
-	if unmatchableName(out) {
-		return "", fmt.Errorf("invalid destination name: %q has a name links cannot match (a leading or trailing space, or a control character)", out)
 	}
 	return out, nil
 }
