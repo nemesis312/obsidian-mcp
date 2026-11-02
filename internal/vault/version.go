@@ -201,7 +201,7 @@ func (v *Vault) CreateNote(path, content string, frontmatter map[string]any) (No
 		if err := r.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return v.fsError("create directory for", out, err)
 		}
-		if err := createExclusive(r, target, []byte(content)); err != nil {
+		if err := createExclusive(r, target, []byte(content), defaultNoteMode); err != nil {
 			if errors.Is(err, errNoteExists) {
 				return err
 			}

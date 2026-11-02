@@ -9,6 +9,7 @@ import (
 	"path"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -486,7 +487,12 @@ func snapshotTree(t *testing.T, dir string) map[string]fileState {
 		}
 		rel, _ := filepath.Rel(dir, p)
 		st := fileState{mod: info.ModTime()}
-		if !d.IsDir() {
+		if d.Type()&fs.ModeSymlink != 0 {
+			st.data, err = os.Readlink(p)
+			if err != nil {
+				return err
+			}
+		} else if !d.IsDir() {
 			data, err := os.ReadFile(p)
 			if err != nil {
 				return err
@@ -590,7 +596,38 @@ func TestMoveLinkerFailureReported(t *testing.T) {
 	}
 }
 
-func TestMoveCanceledLinkersFailed(t *testing.T) {
+// createLockFile creates the write guard's lock file, which is not a note
+// write, so a snapshot taken afterwards sees only what a move writes.
+func createLockFile(t *testing.T, v *Vault) {
+	t.Helper()
+	unlock, err := v.guard.lock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	unlock()
+}
+
+func TestMoveCanceledBeforeWriteWritesNothing(t *testing.T) {
+	v := newTestVault(t)
+	writeRaw(t, v, "a.md", "a\n")
+	writeRaw(t, v, "L1.md", "[[a]]\n")
+	createLockFile(t, v)
+	old := snapshotTree(t, v.Root())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// Canceled after planning, before the guard: nothing may be written.
+	writeLockHook = cancel
+	t.Cleanup(func() { writeLockHook = nil })
+
+	if _, err := v.MoveNote(ctx, "a.md", "b.md", "", false); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if got := snapshotTree(t, v.Root()); !reflect.DeepEqual(got, old) {
+		t.Errorf("the canceled move changed the vault")
+	}
+}
+
+func TestMoveCanceledAfterWriteFinishes(t *testing.T) {
 	v := newTestVault(t)
 	writeRaw(t, v, "a.md", "a\n")
 	writeRaw(t, v, "L1.md", "[[a]]\n")
@@ -608,12 +645,16 @@ func TestMoveCanceledLinkersFailed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []RenameFailure{{Path: "L1.md", Error: "canceled"}, {Path: "L2.md", Error: "canceled"}}
-	if !reflect.DeepEqual(res.Failed, want) {
-		t.Errorf("failed = %+v, want %+v", res.Failed, want)
+	if len(res.Failed) != 0 || len(res.Updated) != 2 {
+		t.Errorf("result %+v, want both linkers updated", res)
 	}
 	if v.NoteExists("a.md") || !v.NoteExists("b.md") {
 		t.Error("the note did not move")
+	}
+	for _, l := range []string{"L1.md", "L2.md"} {
+		if got, _ := v.ReadNote(l); got != "[[b]]\n" {
+			t.Errorf("%s = %q, want it rewritten after the cancel", l, got)
+		}
 	}
 }
 
@@ -624,19 +665,41 @@ func TestMoveVerifyFailure(t *testing.T) {
 	// turn it into inline code.
 	writeRaw(t, v, "L.md", "a ` b [[Old]]\n")
 	writeRaw(t, v, "M.md", "[[Old]]\n")
-	res, err := v.MoveNote(context.Background(), "Old.md", "x`y.md", "", false)
+	createLockFile(t, v)
+	old := snapshotTree(t, v.Root())
+
+	res, err := v.MoveNote(context.Background(), "Old.md", "x`y.md", "", true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := []RenameFailure{{Path: "L.md", Error: "rewrite would change link meaning"}}
 	if !reflect.DeepEqual(res.Failed, want) {
-		t.Errorf("failed = %+v, want %+v", res.Failed, want)
+		t.Errorf("dry run failed = %+v, want %+v", res.Failed, want)
 	}
-	if got, _ := v.ReadNote("L.md"); got != "a ` b [[Old]]\n" {
-		t.Errorf("L.md = %q, want it unchanged", got)
+
+	_, err = v.MoveNote(context.Background(), "Old.md", "x`y.md", "", false)
+	wantErr := "cannot move Old.md: 1 linked note(s) could not be rewritten safely, nothing was written: L.md (rewrite would change link meaning); run with dry_run=true to see the plan"
+	if err == nil || err.Error() != wantErr {
+		t.Fatalf("err = %v, want %q", err, wantErr)
 	}
-	if got, _ := v.ReadNote("M.md"); got != "[[x`y]]\n" {
-		t.Errorf("M.md = %q", got)
+	if got := snapshotTree(t, v.Root()); !reflect.DeepEqual(got, old) {
+		t.Errorf("the refused move changed the vault")
+	}
+}
+
+func TestMoveRefusalListsAtMostTen(t *testing.T) {
+	v := newTestVault(t)
+	writeRaw(t, v, "Old.md", "old\n")
+	for i := 0; i < 12; i++ {
+		writeRaw(t, v, fmt.Sprintf("L%02d.md", i), "a ` b [[Old]]\n")
+	}
+	_, err := v.MoveNote(context.Background(), "Old.md", "x`y.md", "", false)
+	if err == nil || !strings.Contains(err.Error(), "12 linked note(s)") || !strings.Contains(err.Error(), "L09.md") ||
+		strings.Contains(err.Error(), "L10.md") || !strings.Contains(err.Error(), "… (2 more)") {
+		t.Fatalf("err = %v", err)
+	}
+	if !v.NoteExists("Old.md") {
+		t.Error("the refused move moved the note")
 	}
 }
 
@@ -706,16 +769,11 @@ func TestMoveAbortsWhenOwnLinksUnsafe(t *testing.T) {
 	// already on its line: inline code, no link.
 	writeRaw(t, v, "Old.md", "a ` b [[Old]]\n")
 	writeRaw(t, v, "L.md", "[[Old]]\n")
-	// The guard's lock file is not a note write: create it beforehand.
-	unlock, err := v.guard.lock()
-	if err != nil {
-		t.Fatal(err)
-	}
-	unlock()
+	createLockFile(t, v)
 	old := snapshotTree(t, v.Root())
 	for _, dry := range []bool{true, false} {
 		_, err := v.MoveNote(context.Background(), "Old.md", "x`y.md", "", dry)
-		want := "cannot move Old.md: its own links could not be rewritten safely"
+		want := "cannot move Old.md: its own link [[Old]] could not be rewritten safely"
 		if err == nil || err.Error() != want {
 			t.Errorf("dry %v: err = %v, want %q", dry, err, want)
 		}
@@ -766,5 +824,324 @@ func TestMoveRefusesLinkUnsafeName(t *testing.T) {
 	}
 	if got := dirEntries(t, v.Root()); !reflect.DeepEqual(got, []string{"a.md"}) {
 		t.Errorf("vault holds %v, want only a.md", got)
+	}
+}
+
+// FR-1: a destination folder typed in another case is the existing folder
+// on a case-insensitive file system; the move must resolve links against
+// its on-disk spelling, or the same-folder tie-break flips silently.
+func TestMoveFolderTypedInAnotherCase(t *testing.T) {
+	v := newTestVault(t)
+	if !caseInsensitiveFS(t, v.Root()) {
+		t.Skip("file system is case-sensitive")
+	}
+	writeRaw(t, v, "projects/Dup.md", "p\n")
+	writeRaw(t, v, "other/Dup.md", "o\n")
+	writeRaw(t, v, "inbox/x.md", "[[other/Dup]]\n")
+	writeRaw(t, v, "inbox/y.md", "[[Dup]]\n")
+	before := graphEdges(t, v)
+	res, err := v.MoveNote(context.Background(), "inbox/x.md", "Projects/x.md", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.To != "projects/x.md" {
+		t.Errorf("To = %q, want the folder's on-disk spelling projects/x.md", res.To)
+	}
+	assertSameGraph(t, before, graphEdges(t, v), "inbox/x.md", "projects/x.md", res.Warnings)
+	if got, _ := v.ReadNote("projects/x.md"); got != "[[other/Dup]]\n" {
+		t.Errorf("moved note = %q", got)
+	}
+}
+
+// FR-1, the reviewer's repro: [[Dup]] in the moved note resolves to
+// other/Dup.md before the move; next to projects/Dup.md it would flip.
+func TestMoveFolderCaseKeepsTieBreak(t *testing.T) {
+	v := newTestVault(t)
+	if !caseInsensitiveFS(t, v.Root()) {
+		t.Skip("file system is case-sensitive")
+	}
+	writeRaw(t, v, "projects/Dup.md", "p\n")
+	writeRaw(t, v, "other/Dup.md", "o\n")
+	writeRaw(t, v, "inbox/x.md", "[[Dup]]\n")
+	before := graphEdges(t, v)
+	res, err := v.MoveNote(context.Background(), "inbox/x.md", "Projects/x.md", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.To != "projects/x.md" {
+		t.Errorf("To = %q, want projects/x.md", res.To)
+	}
+	assertSameGraph(t, before, graphEdges(t, v), "inbox/x.md", "projects/x.md", res.Warnings)
+}
+
+// FR-4: the moved note keeps its file mode.
+func TestMoveKeepsFileMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no POSIX modes")
+	}
+	v := newTestVault(t)
+	writeRaw(t, v, "secret.md", "s\n")
+	if err := os.Chmod(filepath.Join(v.Root(), "secret.md"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.MoveNote(context.Background(), "secret.md", "sub/secret.md", "", false); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(filepath.Join(v.Root(), "sub", "secret.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("mode = %v, want 0600", info.Mode().Perm())
+	}
+}
+
+// FR-5: a destination folder that is a symlink is refused; links written
+// by path would name the symlink while the note lives under its target.
+func TestMoveRefusesSymlinkedDestinationFolder(t *testing.T) {
+	v := newTestVault(t)
+	writeRaw(t, v, "real/keep.md", "k\n")
+	if err := os.Symlink("real", filepath.Join(v.Root(), "linkdir")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	writeRaw(t, v, "x.md", "x\n")
+	writeRaw(t, v, "L.md", "[[x]] [y](/x.md) [[./x]]\n")
+	createLockFile(t, v)
+	old := snapshotTree(t, v.Root())
+	for _, dst := range []string{"linkdir/x.md", "linkdir/new/x.md"} {
+		for _, dry := range []bool{true, false} {
+			_, err := v.MoveNote(context.Background(), "x.md", dst, "", dry)
+			want := "invalid destination " + dst + ": a folder in the path is a symlink"
+			if err == nil || err.Error() != want {
+				t.Errorf("%s dry %v: err = %v, want %q", dst, dry, err, want)
+			}
+		}
+	}
+	if got := snapshotTree(t, v.Root()); !reflect.DeepEqual(got, old) {
+		t.Errorf("the refused move changed the vault")
+	}
+}
+
+// FR-6: a rewrite that would break a note's YAML frontmatter is a verify
+// failure: listed by a dry run, and the real move is refused.
+func TestMoveFrontmatterWouldBreak(t *testing.T) {
+	v := newTestVault(t)
+	writeRaw(t, v, "Old.md", "old\n")
+	writeRaw(t, v, "L.md", "---\nup: '[[Old]]'\ntags: [a]\n---\nbody\n")
+	writeRaw(t, v, "M.md", "[[Old]]\n")
+	createLockFile(t, v)
+	old := snapshotTree(t, v.Root())
+
+	res, err := v.MoveNote(context.Background(), "Old.md", "Bob's note.md", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []RenameFailure{{Path: "L.md", Error: "rewrite would break the note's frontmatter"}}
+	if !reflect.DeepEqual(res.Failed, want) {
+		t.Errorf("dry run failed = %+v, want %+v", res.Failed, want)
+	}
+	_, err = v.MoveNote(context.Background(), "Old.md", "Bob's note.md", "", false)
+	if err == nil || !strings.Contains(err.Error(), "L.md (rewrite would break the note's frontmatter)") {
+		t.Errorf("err = %v, want the move refused naming L.md", err)
+	}
+	if got := snapshotTree(t, v.Root()); !reflect.DeepEqual(got, old) {
+		t.Errorf("the refused move changed the vault")
+	}
+
+	// The moved note's own frontmatter: the move is refused the same way
+	// as an unsafe own link.
+	writeRaw(t, v, "Self.md", "---\nself: '[[Self]]'\n---\n")
+	for _, dry := range []bool{true, false} {
+		_, err := v.MoveNote(context.Background(), "Self.md", "Bob's self.md", "", dry)
+		want := "cannot move Self.md: rewrite would break the note's frontmatter"
+		if err == nil || err.Error() != want {
+			t.Errorf("dry %v: err = %v, want %q", dry, err, want)
+		}
+	}
+	if !v.NoteExists("Self.md") {
+		t.Error("Self.md moved")
+	}
+}
+
+// SR-1: a linker edited between planning and the guard keeps the edit and
+// is rewritten from its new content; an unchanged linker keeps its plan.
+func TestMoveReplansLinkerEditedBeforeGuard(t *testing.T) {
+	v := newTestVault(t)
+	writeRaw(t, v, "a.md", "a\n")
+	writeRaw(t, v, "L.md", "[[a]]\n")
+	writeRaw(t, v, "K.md", "[[a]] kept\n")
+	writeLockHook = func() { writeRaw(t, v, "L.md", "user edit [[a#H]]\n[[a]]\n") }
+	t.Cleanup(func() { writeLockHook = nil })
+
+	res, err := v.MoveNote(context.Background(), "a.md", "b.md", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for p, want := range map[string]string{
+		"L.md": "user edit [[b#H]]\n[[b]]\n",
+		"K.md": "[[b]] kept\n",
+	} {
+		if got, _ := v.ReadNote(p); got != want {
+			t.Errorf("%s = %q, want %q", p, got, want)
+		}
+	}
+	want := []LinkChange{
+		{Path: "K.md", Links: []LinkEdit{{Old: "[[a]]", New: "[[b]]"}}},
+		{Path: "L.md", Links: []LinkEdit{{Old: "[[a#H]]", New: "[[b#H]]"}, {Old: "[[a]]", New: "[[b]]"}}},
+	}
+	if !reflect.DeepEqual(res.Updated, want) || len(res.Failed) != 0 {
+		t.Errorf("updated %+v failed %+v", res.Updated, res.Failed)
+	}
+}
+
+// SR-1: a linker created between planning and the guard is rewritten too.
+func TestMoveRewritesLinkerCreatedBeforeGuard(t *testing.T) {
+	v := newTestVault(t)
+	writeRaw(t, v, "a.md", "a\n")
+	writeRaw(t, v, "K.md", "[[a]] kept\n")
+	writeLockHook = func() { writeRaw(t, v, "N.md", "new note [[a]]\n") }
+	t.Cleanup(func() { writeLockHook = nil })
+
+	res, err := v.MoveNote(context.Background(), "a.md", "b.md", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for p, want := range map[string]string{"K.md": "[[b]] kept\n", "N.md": "new note [[b]]\n"} {
+		if got, _ := v.ReadNote(p); got != want {
+			t.Errorf("%s = %q, want %q", p, got, want)
+		}
+	}
+	if len(res.Updated) != 2 || res.Updated[1].Path != "N.md" || len(res.Failed) != 0 {
+		t.Errorf("updated %+v failed %+v", res.Updated, res.Failed)
+	}
+}
+
+// SR-6: a linker whose rewrite fails its check only after a change made
+// between planning and the guard still refuses the move.
+func TestMoveRefusedWhenLinkerTurnsUnsafeBeforeGuard(t *testing.T) {
+	v := newTestVault(t)
+	writeRaw(t, v, "Old.md", "old\n")
+	writeRaw(t, v, "L.md", "[[Old]]\n")
+	writeLockHook = func() { writeRaw(t, v, "L.md", "a ` b [[Old]]\n") }
+	t.Cleanup(func() { writeLockHook = nil })
+	_, err := v.MoveNote(context.Background(), "Old.md", "x`y.md", "", false)
+	if err == nil || !strings.Contains(err.Error(), "L.md (rewrite would change link meaning)") {
+		t.Fatalf("err = %v, want the move refused", err)
+	}
+	if !v.NoteExists("Old.md") || v.NoteExists("x`y.md") {
+		t.Error("the refused move moved the note")
+	}
+}
+
+// SR-1: the source edited between planning and the guard: with
+// expected_version the move is a conflict and writes nothing; without, the
+// new content is the one moved.
+func TestMoveSourceEditedBeforeGuard(t *testing.T) {
+	v := newTestVault(t)
+	writeRaw(t, v, "a.md", "a\n")
+	writeRaw(t, v, "L.md", "[[a]]\n")
+	createLockFile(t, v)
+	old := snapshotTree(t, v.Root())
+	writeLockHook = func() { writeRaw(t, v, "a.md", "edited [[a]]\n") }
+	t.Cleanup(func() { writeLockHook = nil })
+
+	_, err := v.MoveNote(context.Background(), "a.md", "b.md", VersionOf([]byte("a\n")), false)
+	var ce *ConflictError
+	if !errors.As(err, &ce) || ce.Current != VersionOf([]byte("edited [[a]]\n")) {
+		t.Fatalf("err = %v, want a ConflictError with the edited version", err)
+	}
+	old["a.md"] = snapshotTree(t, v.Root())["a.md"]
+	if got := snapshotTree(t, v.Root()); !reflect.DeepEqual(got, old) {
+		t.Errorf("the conflicting move changed the vault")
+	}
+
+	writeLockHook = func() { writeRaw(t, v, "a.md", "again [[a]]\n") }
+	res, err := v.MoveNote(context.Background(), "a.md", "b.md", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := v.ReadNote("b.md"); got != "again [[b]]\n" || res.Version != VersionOf([]byte(got)) {
+		t.Errorf("b.md = %q, version %s", got, res.Version)
+	}
+}
+
+// SR-6: a destination name links cannot match is refused before any write.
+func TestMoveRefusesUnmatchableName(t *testing.T) {
+	v := newTestVault(t)
+	writeRaw(t, v, "a.md", "a\n")
+	for _, dst := range []string{" a.md", "a .md", "x/ y/a.md", "x /a.md", "a\tb.md", "a\nb", "a\x01b.md", "a\x7fb.md"} {
+		_, err := v.MoveNote(context.Background(), "a.md", dst, "", false)
+		if err == nil || !strings.HasPrefix(err.Error(), "invalid destination name: ") || strings.Contains(err.Error(), "\n") {
+			t.Errorf("MoveNote to %q: err = %v", dst, err)
+		}
+	}
+	if got := dirEntries(t, v.Root()); !reflect.DeepEqual(got, []string{"a.md"}) {
+		t.Errorf("vault holds %v, want only a.md", got)
+	}
+}
+
+// SR-10: moving into a hidden folder needs expected_version.
+func TestMoveIntoHiddenFolderNeedsVersion(t *testing.T) {
+	v := newTestVault(t)
+	writeRaw(t, v, "a.md", "a\n")
+	for _, dst := range []string{".archive/a.md", "x/.hidden/a.md"} {
+		for _, dry := range []bool{true, false} {
+			_, err := v.MoveNote(context.Background(), "a.md", dst, "", dry)
+			if !errors.Is(err, ErrVersionRequired) || !strings.Contains(err.Error(), path.Dir(dst)) {
+				t.Errorf("%s dry %v: err = %v, want ErrVersionRequired naming the folder", dst, dry, err)
+			}
+		}
+	}
+	if !v.NoteExists("a.md") {
+		t.Fatal("a.md moved")
+	}
+	res, err := v.MoveNote(context.Background(), "a.md", ".archive/a.md", VersionOf([]byte("a\n")), false)
+	if err != nil || res.To != ".archive/a.md" {
+		t.Fatalf("move with the version: %+v, %v", res, err)
+	}
+	// A hidden file name in a visible folder is not a hidden folder.
+	writeRaw(t, v, "c.md", "c\n")
+	if _, err := v.MoveNote(context.Background(), "c.md", "x/.c.md", "", true); err != nil {
+		t.Errorf("hidden file name: %v", err)
+	}
+}
+
+// BenchmarkMovePlanDeep plans a move to a destination D folders deep whose
+// every whole-segment suffix is shared with a decoy note, so links.TargetFor
+// tries D suffixes, each resolved in O(D), before it settles on the full
+// path. The linker repeats the link 10k times; TargetFor is memoized per
+// linker folder, so the cost grows with D once, not once per occurrence.
+func BenchmarkMovePlanDeep(b *testing.B) {
+	for _, depth := range []int{4, 400} {
+		b.Run(fmt.Sprintf("D=%d", depth), func(b *testing.B) {
+			dir := b.TempDir()
+			write := func(rel, content string) {
+				p := filepath.Join(dir, filepath.FromSlash(rel))
+				if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+					b.Fatal(err)
+				}
+				if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+					b.Fatal(err)
+				}
+			}
+			deep := strings.Repeat("s/", depth) + "moved.md"
+			write("b/"+deep, "decoy\n")
+			write("src.md", "the note that moves\n")
+			write("L.md", strings.Repeat("[[src]] ", 10000)+"\n")
+			v, err := New(dir)
+			if err != nil {
+				b.Fatal(err)
+			}
+			if _, err := v.linkIndex(); err != nil {
+				b.Fatal(err)
+			}
+			ctx := context.Background()
+			for b.Loop() {
+				res, err := v.MoveNote(ctx, "src.md", "a/"+deep, "", true)
+				if err != nil || len(res.Updated) != 1 || len(res.Updated[0].Links) != 10000 {
+					b.Fatalf("plan: %d updated, %v", len(res.Updated), err)
+				}
+			}
+		})
 	}
 }

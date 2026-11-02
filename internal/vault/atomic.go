@@ -83,10 +83,10 @@ func writeFileAtomic(r *os.Root, rel string, data []byte) error {
 	return nil
 }
 
-// createExclusive creates rel with data through r, failing with
+// createExclusive creates rel with data and mode through r, failing with
 // errNoteExists if it already exists.
-func createExclusive(r *os.Root, rel string, data []byte) error {
-	tmp, err := writeTemp(r, rel, data, defaultNoteMode)
+func createExclusive(r *os.Root, rel string, data []byte, mode fs.FileMode) error {
+	tmp, err := writeTemp(r, rel, data, mode)
 	if err != nil {
 		return err
 	}
@@ -101,7 +101,7 @@ func createExclusive(r *os.Root, rel string, data []byte) error {
 	}
 
 	// Hard links unavailable (e.g. some network/FAT filesystems): O_EXCL fallback.
-	f, oerr := r.OpenFile(rel, os.O_WRONLY|os.O_CREATE|os.O_EXCL, defaultNoteMode)
+	f, oerr := r.OpenFile(rel, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
 	if oerr != nil {
 		if errors.Is(oerr, fs.ErrExist) {
 			return errNoteExists
@@ -117,5 +117,6 @@ func createExclusive(r *os.Root, rel string, data []byte) error {
 		r.Remove(rel)
 		return cerr
 	}
+	_ = r.Chmod(rel, mode) // the umask applied at open; best effort as in writeTemp
 	return nil
 }
