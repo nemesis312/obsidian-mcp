@@ -1145,3 +1145,24 @@ func BenchmarkMovePlanDeep(b *testing.B) {
 		})
 	}
 }
+
+// TestRequestedLeaf covers what TestMoveCaseOnly needs on Windows, where
+// filepath.EvalSymlinks returns the destination in its on-disk case.
+func TestRequestedLeaf(t *testing.T) {
+	j := func(s ...string) string {
+		return filepath.Join(append([]string{string(filepath.Separator) + "v"}, s...)...)
+	}
+	cases := []struct{ name, resolved, lexical, want string }{
+		{"same", j("a", "Note.md"), j("a", "Note.md"), j("a", "Note.md")},
+		{"leaf case from disk", j("note.md"), j("Note.md"), j("Note.md")},
+		{"folder case from disk kept", j("a", "note.md"), j("A", "Note.md"), j("a", "Note.md")},
+		{"folder case only", j("a", "Note.md"), j("A", "Note.md"), j("a", "Note.md")},
+		{"symlink leaf", j("other.md"), j("Note.md"), j("other.md")},
+		{"symlink leaf to case variant elsewhere", j("b", "note.md"), j("Note.md"), j("b", "note.md")},
+	}
+	for _, c := range cases {
+		if got := requestedLeaf(c.resolved, c.lexical); got != c.want {
+			t.Errorf("%s: requestedLeaf(%q, %q) = %q, want %q", c.name, c.resolved, c.lexical, got, c.want)
+		}
+	}
+}

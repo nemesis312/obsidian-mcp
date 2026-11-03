@@ -432,11 +432,26 @@ func (v *Vault) checkMovePaths(r *os.Root, arg string, p *movePlan) error {
 		return fmt.Errorf("cannot move %s: it is a symlink; move its target instead", p.src)
 	}
 	p.mode = info.Mode().Perm()
+	safeDst = requestedLeaf(safeDst, filepath.Join(v.root, filepath.FromSlash(p.dst)))
 	if p.dstRel, err = v.rootRel(safeDst); err != nil {
 		return err
 	}
 	p.caseOnly, err = v.checkDestination(r, p)
 	return err
+}
+
+// requestedLeaf returns resolved with its last name spelled as in lexical,
+// the destination as asked for, when the two differ only in case. On
+// Windows filepath.EvalSymlinks returns each existing name in its on-disk
+// case, so a case-only rename ("note.md" to "Note.md") would resolve to
+// the source's own name. Any other difference (a symlink at the leaf) keeps
+// resolved. Folder names keep their resolved case.
+func requestedLeaf(resolved, lexical string) string {
+	base := filepath.Base(lexical)
+	if resolved == lexical || filepath.Base(resolved) == base || !strings.EqualFold(resolved, lexical) {
+		return resolved
+	}
+	return filepath.Join(filepath.Dir(resolved), base)
 }
 
 // checkDestFolders refuses a destination whose existing folders include a
