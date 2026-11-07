@@ -309,3 +309,130 @@ func TestCreateNoteWindowsNameForms(t *testing.T) {
 		t.Error("draft~2.md was not created")
 	}
 }
+
+func TestEditSectionTool(t *testing.T) {
+	e := newEnv(t)
+	e.write("n.md", "# A\nold\n\n# B\nb\n")
+
+	out, isErr := e.call("edit_section", map[string]any{"path": "n.md", "heading": "A", "mode": "replace", "content": "new"})
+	if !isErr || !strings.Contains(out, "expected_version") {
+		t.Fatalf("replace without version: isErr=%v out=%s", isErr, out)
+	}
+
+	out, isErr = e.call("edit_section", map[string]any{
+		"path": "n.md", "heading": "A", "mode": "replace", "content": "new",
+		"expected_version": e.versionOf("n.md"),
+	})
+	if isErr {
+		t.Fatalf("replace: %s", out)
+	}
+	if got := e.read("n.md"); got != "# A\nnew\n\n# B\nb\n" {
+		t.Fatalf("after replace: %q", got)
+	}
+
+	if out, isErr = e.call("edit_section", map[string]any{"path": "n.md", "heading": "B", "mode": "append", "content": "tail"}); isErr {
+		t.Fatalf("append: %s", out)
+	}
+	if got := e.read("n.md"); got != "# A\nnew\n\n# B\nb\ntail\n" {
+		t.Fatalf("after append: %q", got)
+	}
+
+	if out, isErr = e.call("edit_section", map[string]any{"path": "n.md", "heading": "B", "mode": "prepend", "content": "head"}); isErr {
+		t.Fatalf("prepend: %s", out)
+	}
+	if got := e.read("n.md"); got != "# A\nnew\n\n# B\nhead\nb\ntail\n" {
+		t.Fatalf("after prepend: %q", got)
+	}
+
+	out, isErr = e.call("edit_section", map[string]any{"path": "n.md", "heading": "B", "mode": "bogus", "content": "x"})
+	if !isErr || !strings.Contains(out, "mode") {
+		t.Fatalf("invalid mode: isErr=%v out=%s", isErr, out)
+	}
+	out, isErr = e.call("edit_section", map[string]any{"path": "n.md", "heading": "Zed", "mode": "append", "content": "x"})
+	if !isErr || !strings.Contains(out, "not found") {
+		t.Fatalf("missing heading: isErr=%v out=%s", isErr, out)
+	}
+}
+
+func TestMoveNoteTool(t *testing.T) {
+	e := newEnv(t)
+	e.write("src.md", "# src\n")
+	e.write("linker.md", "see [[src]] and [[src|alias]]\n")
+
+	out, isErr := e.call("move_note", map[string]any{"path": "src.md", "new_path": "sub/dst", "dry_run": true})
+	if isErr {
+		t.Fatalf("dry run: %s", out)
+	}
+	var dry struct {
+		Success bool `json:"success"`
+		DryRun  bool `json:"dry_run"`
+		Updated []struct {
+			Path string `json:"path"`
+		} `json:"updated"`
+		Failed   []any `json:"failed"`
+		Warnings []any `json:"warnings"`
+	}
+	if err := json.Unmarshal([]byte(out), &dry); err != nil {
+		t.Fatal(err)
+	}
+	if !dry.Success || !dry.DryRun || len(dry.Updated) != 1 || dry.Updated[0].Path != "linker.md" {
+		t.Fatalf("dry run result: %s", out)
+	}
+	if dry.Failed == nil || dry.Warnings == nil || !strings.Contains(out, `"failed":[]`) || !strings.Contains(out, `"warnings":[]`) {
+		t.Fatalf("failed and warnings must be [] not null: %s", out)
+	}
+	if !e.exists("src.md") || e.exists("sub/dst.md") || e.read("linker.md") != "see [[src]] and [[src|alias]]\n" {
+		t.Fatal("dry run changed the vault")
+	}
+
+	out, isErr = e.call("move_note", map[string]any{"path": "src.md", "new_path": "sub/dst", "dry_run": "yes"})
+	if !isErr || !strings.Contains(out, "dry_run") {
+		t.Fatalf("bad dry_run type: isErr=%v out=%s", isErr, out)
+	}
+
+	out, isErr = e.call("move_note", map[string]any{"path": "src.md", "new_path": "sub/dst", "expected_version": "sha256:0000000000000000"})
+	if !isErr {
+		t.Fatalf("stale version accepted: %s", out)
+	}
+
+	out, isErr = e.call("move_note", map[string]any{"path": "src.md", "new_path": "sub/dst"})
+	if isErr {
+		t.Fatalf("move: %s", out)
+	}
+	var res struct {
+		Success bool   `json:"success"`
+		To      string `json:"to"`
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal([]byte(out), &res); err != nil {
+		t.Fatal(err)
+	}
+	if !res.Success || res.To != "sub/dst.md" || res.Version == "" {
+		t.Fatalf("move result: %s", out)
+	}
+	if e.exists("src.md") || !e.exists("sub/dst.md") {
+		t.Fatal("note was not moved")
+	}
+	if got := e.read("linker.md"); got != "see [[dst]] and [[dst|alias]]\n" {
+		t.Fatalf("linker not rewritten: %q", got)
+	}
+
+	e.write("other.md", "x")
+	out, isErr = e.call("move_note", map[string]any{"path": "other.md", "new_path": "sub/dst.md"})
+	if !isErr || !strings.Contains(out, "destination already exists") || !strings.Contains(out, "failed to move") {
+		t.Fatalf("existing destination: isErr=%v out=%s", isErr, out)
+	}
+}
+
+// A move into a hidden folder needs expected_version, like delete_note.
+func TestMoveNoteHiddenFolderNeedsVersion(t *testing.T) {
+	e := newEnv(t)
+	e.write("n.md", "n\n")
+	out, isErr := e.call("move_note", map[string]any{"path": "n.md", "new_path": ".archive/n"})
+	if !isErr || !strings.Contains(out, "expected_version is required") || !strings.Contains(out, ".archive") {
+		t.Fatalf("move_note into .archive = %q, isErr=%v", out, isErr)
+	}
+	if !e.exists("n.md") {
+		t.Error("n.md moved")
+	}
+}

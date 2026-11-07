@@ -11,10 +11,10 @@ import (
 )
 
 var sweepTools = []string{
-	"append_to_note", "create_note", "delete_note", "get_backlinks", "get_canvas",
+	"append_to_note", "create_note", "delete_note", "edit_section", "get_backlinks", "get_canvas",
 	"get_frontmatter", "get_link_graph", "get_linked_mentions", "get_note",
 	"get_note_metadata", "get_notes_by_tag", "get_orphaned_notes", "get_outgoing_links",
-	"list_all_tags", "list_canvases", "list_vault_files", "patch_note", "rename_tag",
+	"list_all_tags", "list_canvases", "list_vault_files", "move_note", "patch_note", "rename_tag",
 	"search_vault", "update_frontmatter",
 }
 
@@ -41,7 +41,10 @@ func TestNoToolOutputContainsAbsolutePath(t *testing.T) {
 	// sweep calls name in a fresh seeded vault with the arguments args
 	// builds from that vault's root, and reports whether the result was a
 	// non-error with non-empty text.
-	sweep := func(t *testing.T, name string, args func(root string) map[string]any) bool {
+	// echoed, when not "", names the argument whose own value the tool may
+	// quote back (a section heading it did not find): that value is taken
+	// out of the result before the leak check.
+	sweep := func(t *testing.T, name, echoed string, args func(root string) map[string]any) (string, bool) {
 		t.Helper()
 		e := newEnv(t)
 		seedSweepVault(t, e, filepath.Join(t.TempDir(), "outside.md"))
@@ -52,20 +55,25 @@ func TestNoToolOutputContainsAbsolutePath(t *testing.T) {
 		if ok {
 			okResults++
 		}
+		checked := text
+		if v, isStr := a[echoed].(string); echoed != "" && isStr && v != "" {
+			checked = strings.ReplaceAll(checked, fmt.Sprintf("%q", v), "")
+			checked = strings.ReplaceAll(checked, v, "")
+		}
 		for _, bad := range forbidden(e.root) {
-			if strings.Contains(text, bad) {
+			if strings.Contains(checked, bad) {
 				t.Errorf("%s(%q) leaks %q: %s", name, a, bad, text)
 				break
 			}
 		}
-		return ok
+		return text, ok
 	}
 
 	for _, name := range sweepTools {
 		schema := probe.s.GetTool(name).Tool.InputSchema
 
 		t.Run(name+"/no-args", func(t *testing.T) {
-			ok := sweep(t, name, func(string) map[string]any { return map[string]any{} })
+			_, ok := sweep(t, name, "", func(string) map[string]any { return map[string]any{} })
 			if len(schema.Required) == 0 && !ok {
 				t.Errorf("%s() takes no required argument but gave an error or an empty result", name)
 			}
@@ -81,8 +89,22 @@ func TestNoToolOutputContainsAbsolutePath(t *testing.T) {
 		for _, prop := range props {
 			for i, hostile := range hostileValues(t) {
 				t.Run(fmt.Sprintf("%s/%s/%d", name, prop, i), func(t *testing.T) {
-					sweep(t, name, func(root string) map[string]any {
+					defaults, deep := sweepDefaults[name]
+					echoed := ""
+					if name == "edit_section" && prop == "heading" {
+						echoed = prop
+					}
+					text, _ := sweep(t, name, echoed, func(root string) map[string]any {
 						args := map[string]any{}
+						if deep {
+							// Valid defaults, so the hostile value reaches
+							// the code that uses prop.
+							for k, v := range defaults {
+								args[k] = v
+							}
+							args[prop] = hostile(root)
+							return args
+						}
 						for _, req := range schema.Required {
 							def, _ := schema.Properties[req].(map[string]any)
 							switch {
@@ -100,6 +122,13 @@ func TestNoToolOutputContainsAbsolutePath(t *testing.T) {
 						args[prop] = hostile(root)
 						return args
 					})
+					if deep && prop != "path" && prop != "mode" {
+						for _, generic := range []string{"note not found", "invalid mode"} {
+							if strings.Contains(text, generic) {
+								t.Errorf("%s with a hostile %s stopped at %q before reaching the code under test: %s", name, prop, generic, text)
+							}
+						}
+					}
 				})
 			}
 		}
@@ -116,6 +145,15 @@ func TestNoToolOutputContainsAbsolutePath(t *testing.T) {
 	if okResults == 0 {
 		t.Error("no call returned a non-error, non-empty result: the sweep proves nothing")
 	}
+}
+
+// sweepDefaults are valid arguments for the tools whose placeholder "x"
+// arguments would stop every call early (a missing note, an invalid mode),
+// so a hostile value in another argument would never be exercised. They
+// carry no expected_version, which would stop at a version conflict.
+var sweepDefaults = map[string]map[string]any{
+	"edit_section": {"path": "A", "heading": "A", "mode": "append", "content": "x"},
+	"move_note":    {"path": "A", "new_path": "moved", "dry_run": true},
 }
 
 // sweepSecret is the content of the file outside the vault that out.md
@@ -158,6 +196,7 @@ func hostileValues(t *testing.T) []func(root string) string {
 		func(string) string { return ".OBSIDIAN-MCP/x.md" },
 		func(string) string { return ".obsidian-mcp./x.md" },
 		func(string) string { return "/C:/x.md" },
+		func(string) string { return "OBSIDI~1/x" },
 	}
 }
 

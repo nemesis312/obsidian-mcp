@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -143,7 +142,9 @@ func (v *Vault) modifyNote(arg, rel, expected string, edit func(current string) 
 // version token: exclusive creation is its guard.
 //
 // Exclusivity: the full content is first written to a temp file in the same
-// directory, then published with os.Link, which fails with EEXIST atomically.
+// directory, then published with a hard link (os.Root.Link), which fails
+// with EEXIST atomically. Every file system call goes through an os.Root on
+// the vault, so a symlink swapped in after validation cannot lead outside.
 // Readers therefore never observe a partially written note and concurrent
 // creators cannot both succeed. If the filesystem has no hard links, it falls
 // back to open(O_CREATE|O_EXCL) on the final path (still race-free for
@@ -187,10 +188,20 @@ func (v *Vault) CreateNote(path, content string, frontmatter map[string]any) (No
 		if err != nil {
 			return err
 		}
-		if err := os.MkdirAll(filepath.Dir(safePath), 0o755); err != nil {
+		target, err := v.rootRel(safePath)
+		if err != nil {
+			return err
+		}
+		beforeWrite(target)
+		r, err := v.openRoot()
+		if err != nil {
+			return v.fsError("create note", out, err)
+		}
+		defer r.Close()
+		if err := r.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return v.fsError("create directory for", out, err)
 		}
-		if err := createExclusive(safePath, []byte(content)); err != nil {
+		if err := createExclusive(r, target, []byte(content), defaultNoteMode); err != nil {
 			if errors.Is(err, errNoteExists) {
 				return err
 			}
@@ -299,7 +310,17 @@ func (v *Vault) DeleteNote(arg, expected string) (string, error) {
 		if err != nil {
 			return err
 		}
-		if err := removeFile(safePath); err != nil {
+		target, err := v.rootRel(safePath)
+		if err != nil {
+			return err
+		}
+		beforeWrite(target)
+		r, err := v.openRoot()
+		if err != nil {
+			return v.fsError("delete note", rel, err)
+		}
+		defer r.Close()
+		if err := removeFile(r, target); err != nil {
 			return notFoundAs(arg, v.fsError("delete note", rel, err))
 		}
 		return nil

@@ -342,3 +342,14 @@ func TestValidatePath_TildeDigitNameAllowed(t *testing.T) {
 		}
 	}
 }
+
+// An 8.3 short-name alias of a protected folder is refused on every OS, so
+// a vault synced to Windows never holds a folder Windows would read as one.
+func TestValidatePath_ProtectedShortNameEveryOS(t *testing.T) {
+	sec := NewSecurityLayer(tempRoot(t))
+	for _, p := range []string{filepath.Join("OBSIDI~1", "x.md"), filepath.Join("GIT~1", "x.md"), filepath.Join("sub", ".obsidi~2", "x.md")} {
+		if _, err := sec.ValidatePath(p); err == nil || !strings.Contains(err.Error(), "path_violation") {
+			t.Errorf("%q: err = %v, want path_violation", p, err)
+		}
+	}
+}

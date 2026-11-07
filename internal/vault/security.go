@@ -55,8 +55,10 @@ func (s *SecurityLayer) ValidatePath(targetPath string) (string, error) {
 	}
 	// 2b. Windows name forms that alias another name (trailing "." or space,
 	// "::$INDEX_ALLOCATION" streams, 8.3 short names) are refused before any
-	// filesystem call, so they can never reach a protected folder.
-	if checkWindowsNames && hasWindowsUnsafeSegment(lexRel) {
+	// filesystem call, so they can never reach a protected folder. The 8.3
+	// alias of a protected folder is refused on every OS: a vault synced to
+	// Windows must not hold one.
+	if hasProtectedShortSegment(lexRel) || checkWindowsNames && hasWindowsUnsafeSegment(lexRel) {
 		return "", errWindowsName
 	}
 
@@ -142,6 +144,17 @@ func hasWindowsUnsafeSegment(rel string) bool {
 		if strings.ContainsRune(seg, ':') || strings.HasSuffix(seg, ".") || strings.HasSuffix(seg, " ") {
 			return true
 		}
+		if isProtectedShortName(seg) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasProtectedShortSegment reports whether a segment of rel is the 8.3
+// short-name alias of a protected folder (isProtectedShortName).
+func hasProtectedShortSegment(rel string) bool {
+	for _, seg := range strings.Split(rel, string(filepath.Separator)) {
 		if isProtectedShortName(seg) {
 			return true
 		}

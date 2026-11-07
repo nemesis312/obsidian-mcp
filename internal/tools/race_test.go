@@ -121,6 +121,13 @@ func TestRaceHelper(t *testing.T) {
 			name, args = "append_to_note", map[string]any{"path": fmt.Sprintf("race/d%d.md", i), "content": "A"}
 		case "delete", "deleteSame":
 			name, args = "delete_note", map[string]any{"path": fmt.Sprintf("race/d%d.md", i), "expected_version": token(i)}
+		case "move", "moveLate":
+			if op == "moveLate" {
+				time.Sleep(20 * time.Millisecond) // land mid-way through the appends
+			}
+			name, args = "move_note", map[string]any{"path": "src.md", "new_path": fmt.Sprintf("dst-%s.md", id)}
+		case "moveAppend":
+			name, args = "append_to_note", map[string]any{"path": "src", "content": fmt.Sprintf("%s-%d", id, i)}
 		default:
 			t.Fatalf("unknown op %q", op)
 		}
@@ -134,6 +141,7 @@ func TestRaceHelper(t *testing.T) {
 // raceSpec describes one helper process.
 type raceSpec struct {
 	op, id, tokens string
+	n              int // operations; 0 means runRace's n
 }
 
 // raceHelper is a running helper process.
@@ -163,18 +171,24 @@ func runRace(t *testing.T, dir string, n int, specs ...raceSpec) map[string][]ra
 	t.Cleanup(cancel)
 
 	helpers := make([]*raceHelper, 0, len(specs))
+	counts := map[string]int{}
 	for _, sp := range specs {
+		cnt := n
+		if sp.n > 0 {
+			cnt = sp.n
+		}
+		counts[sp.id] = cnt
 		cmd := exec.CommandContext(ctx, exe, "-test.run=^TestRaceHelper$", "-test.count=1")
 		cmd.Env = append(os.Environ(),
 			raceRoleEnv+"=helper",
 			raceVaultEnv+"="+dir,
 			raceOpEnv+"="+sp.op,
 			raceIDEnv+"="+sp.id,
-			raceNEnv+"="+strconv.Itoa(n),
+			raceNEnv+"="+strconv.Itoa(cnt),
 			raceTokensEnv+"="+sp.tokens,
 		)
 		cmd.WaitDelay = 5 * time.Second
-		h := &raceHelper{id: sp.id, cmd: cmd, lines: make(chan string, 4*n+16), stderr: &bytes.Buffer{}}
+		h := &raceHelper{id: sp.id, cmd: cmd, lines: make(chan string, 4*cnt+16), stderr: &bytes.Buffer{}}
 		cmd.Stderr = h.stderr
 		if h.stdin, err = cmd.StdinPipe(); err != nil {
 			t.Fatal(err)
@@ -238,6 +252,7 @@ func runRace(t *testing.T, dir string, n int, specs ...raceSpec) map[string][]ra
 
 	results := make(map[string][]raceResult, len(helpers))
 	for _, h := range helpers {
+		n := counts[h.id]
 		res := make([]raceResult, n)
 		seen := make([]bool, n)
 	collect:
@@ -437,6 +452,65 @@ func TestTwoProcessRace(t *testing.T) {
 			}
 			if e.exists(fmt.Sprintf("race/d%d.md", i)) {
 				t.Errorf("d%d: file still exists", i)
+			}
+		}
+	})
+
+	t.Run("moveSame", func(t *testing.T) {
+		dir := t.TempDir()
+		e := newEnvAt(t, dir)
+		e.write("src.md", "# src\n")
+		res := runRace(t, dir, 1, raceSpec{op: "move", id: "A"}, raceSpec{op: "move", id: "B"})
+		a, b := res["A"][0], res["B"][0]
+		t.Logf("move wins: A %v, B %v", a.OK, b.OK)
+		if a.OK == b.OK {
+			t.Fatalf("A ok=%v (%s), B ok=%v (%s); want exactly one ok", a.OK, a.Text, b.OK, b.Text)
+		}
+		if e.exists("src.md") {
+			t.Error("src.md still exists")
+		}
+		da, db := e.exists("dst-A.md"), e.exists("dst-B.md")
+		if da == db {
+			t.Errorf("dst-A exists=%v, dst-B exists=%v; want exactly one", da, db)
+		}
+		if da != a.OK || db != b.OK {
+			t.Errorf("destinations (A %v, B %v) do not match the winners (A %v, B %v)", da, db, a.OK, b.OK)
+		}
+	})
+
+	t.Run("moveVsAppend", func(t *testing.T) {
+		const n = 100
+		dir := t.TempDir()
+		e := newEnvAt(t, dir)
+		e.write("src.md", "# src\n")
+		res := runRace(t, dir, n, raceSpec{op: "moveLate", id: "M", n: 1}, raceSpec{op: "moveAppend", id: "A"})
+		if got := countOK(res["M"]); got != 1 {
+			t.Fatalf("%d moves reported ok, want 1", got)
+		}
+		if e.exists("src.md") {
+			t.Error("src.md still exists")
+		}
+		got := e.read("dst-M.md")
+		count := map[string]int{}
+		for _, l := range strings.Split(got, "\n") {
+			count[l]++
+		}
+		okN := 0
+		for i, r := range res["A"] {
+			l := fmt.Sprintf("A-%d", i)
+			if r.OK {
+				okN++
+				if count[l] != 1 {
+					t.Errorf("append %s reported ok but appears %d times in dst", l, count[l])
+				}
+			} else if count[l] != 0 {
+				t.Errorf("append %s failed (%s) but is in dst", l, r.Text)
+			}
+		}
+		t.Logf("appends ok: %d of %d", okN, n)
+		for i, r := range res["A"] {
+			if !r.OK && !strings.Contains(r.Text, "not found") {
+				t.Errorf("append A-%d failed with %q, want note not found", i, r.Text)
 			}
 		}
 	})

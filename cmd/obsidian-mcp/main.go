@@ -53,7 +53,7 @@ func main() {
 		server.WithToolCapabilities(false),
 	)
 
-	// 4. Register all 20 tools
+	// 4. Register all 22 tools
 	tools.RegisterReadTools(s, v)
 	tools.RegisterWriteTools(s, v)
 	tools.RegisterGraphTools(s, v)

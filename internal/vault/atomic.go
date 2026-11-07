@@ -1,6 +1,8 @@
 package vault
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"io/fs"
 	"os"
@@ -9,66 +11,88 @@ import (
 
 const defaultNoteMode fs.FileMode = 0o644
 
+// tempCreateAttempts bounds how many temp names writeTemp tries when a name
+// is already taken.
+const tempCreateAttempts = 3
+
 // errNoteExists is returned by createExclusive when target already exists.
 var errNoteExists = errors.New("note already exists")
 
-// writeTemp writes data to a hidden temp file next to target and returns its
-// path. The caller owns cleanup on success of the following step.
-func writeTemp(target string, data []byte, mode fs.FileMode) (string, error) {
-	f, err := os.CreateTemp(filepath.Dir(target), ".obsidian-mcp-*.tmp")
-	if err != nil {
-		return "", err
+// replaceFile is the rename writeFileAtomic publishes the temp file with.
+// Tests swap it to make the rename fail.
+var replaceFile = renameReplace
+
+// writeTemp writes data to a hidden temp file
+// (".obsidian-mcp-<16 hex>.tmp") in targetRel's directory, through r, and
+// returns its root-relative name. The caller owns cleanup on success of the
+// following step.
+func writeTemp(r *os.Root, targetRel string, data []byte, mode fs.FileMode) (tmpRel string, err error) {
+	dir := filepath.Dir(targetRel)
+	var f *os.File
+	for attempt := 0; ; attempt++ {
+		var b [8]byte
+		if _, err := rand.Read(b[:]); err != nil {
+			return "", err
+		}
+		tmpRel = filepath.Join(dir, ".obsidian-mcp-"+hex.EncodeToString(b[:])+".tmp")
+		f, err = r.OpenFile(tmpRel, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, fs.ErrExist) || attempt+1 >= tempCreateAttempts {
+			return "", err
+		}
 	}
-	name := f.Name()
 	fail := func(err error) (string, error) {
 		f.Close()
-		os.Remove(name)
+		r.Remove(tmpRel)
 		return "", err
 	}
 	if _, err := f.Write(data); err != nil {
 		return fail(err)
 	}
-	_ = f.Chmod(mode) // best effort: not every platform has POSIX modes
 	if err := f.Sync(); err != nil {
 		return fail(err)
 	}
 	if err := f.Close(); err != nil {
-		os.Remove(name)
+		r.Remove(tmpRel)
 		return "", err
 	}
-	return name, nil
+	_ = r.Chmod(tmpRel, mode) // best effort: not every platform has POSIX modes
+	return tmpRel, nil
 }
 
-// writeFileAtomic replaces target with data via temp file + rename, keeping the
-// existing file's mode (0644 for new files).
-func writeFileAtomic(target string, data []byte) error {
+// writeFileAtomic replaces rel with data via temp file + rename, through r,
+// keeping the existing file's mode (0644 for new files).
+func writeFileAtomic(r *os.Root, rel string, data []byte) error {
 	mode := defaultNoteMode
-	if info, err := os.Stat(target); err == nil {
+	if info, err := r.Stat(rel); err == nil {
 		if info.IsDir() {
-			return &fs.PathError{Op: "write", Path: target, Err: errors.New("is a directory")}
+			return &fs.PathError{Op: "write", Path: rel, Err: errors.New("is a directory")}
 		}
 		mode = info.Mode().Perm()
 	}
-	tmp, err := writeTemp(target, data, mode)
+	tmp, err := writeTemp(r, rel, data, mode)
 	if err != nil {
 		return err
 	}
-	if err := renameReplace(tmp, target); err != nil {
-		os.Remove(tmp)
+	if err := replaceFile(r, tmp, rel); err != nil {
+		r.Remove(tmp)
 		return err
 	}
 	return nil
 }
 
-// createExclusive creates target with data, failing if it already exists.
-func createExclusive(target string, data []byte) error {
-	tmp, err := writeTemp(target, data, defaultNoteMode)
+// createExclusive creates rel with data and mode through r, failing with
+// errNoteExists if it already exists.
+func createExclusive(r *os.Root, rel string, data []byte, mode fs.FileMode) error {
+	tmp, err := writeTemp(r, rel, data, mode)
 	if err != nil {
 		return err
 	}
-	defer os.Remove(tmp)
+	defer r.Remove(tmp)
 
-	err = os.Link(tmp, target)
+	err = r.Link(tmp, rel)
 	switch {
 	case err == nil:
 		return nil
@@ -77,7 +101,7 @@ func createExclusive(target string, data []byte) error {
 	}
 
 	// Hard links unavailable (e.g. some network/FAT filesystems): O_EXCL fallback.
-	f, oerr := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, defaultNoteMode)
+	f, oerr := r.OpenFile(rel, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
 	if oerr != nil {
 		if errors.Is(oerr, fs.ErrExist) {
 			return errNoteExists
@@ -86,12 +110,13 @@ func createExclusive(target string, data []byte) error {
 	}
 	if _, werr := f.Write(data); werr != nil {
 		f.Close()
-		os.Remove(target)
+		r.Remove(rel)
 		return werr
 	}
 	if cerr := f.Close(); cerr != nil {
-		os.Remove(target)
+		r.Remove(rel)
 		return cerr
 	}
+	_ = r.Chmod(rel, mode) // the umask applied at open; best effort as in writeTemp
 	return nil
 }

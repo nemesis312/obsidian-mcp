@@ -642,3 +642,25 @@ func (ix *Index) NotePaths() []string {
 	sort.Strings(out)
 	return out
 }
+
+// RefSets returns, without refreshing, every indexed note path and every
+// attachment path, both sorted, and each note's refs as parsed: one ref per
+// distinct (kind, normalized target), the first occurrence. Every note has
+// an entry in refs, empty when it has no links. All of it is a copy.
+func (ix *Index) RefSets() (notes, attachments []string, refs map[string][]links.Ref) {
+	ix.mu.RLock()
+	defer ix.mu.RUnlock()
+	notes = make([]string, 0, len(ix.notes))
+	refs = make(map[string][]links.Ref, len(ix.notes))
+	for p, e := range ix.notes {
+		notes = append(notes, p)
+		refs[p] = append([]links.Ref{}, e.refs...)
+	}
+	attachments = make([]string, 0, len(ix.atts))
+	for p := range ix.atts {
+		attachments = append(attachments, p)
+	}
+	sort.Strings(notes)
+	sort.Strings(attachments)
+	return notes, attachments, refs
+}

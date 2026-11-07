@@ -149,10 +149,14 @@ func TestSuggestBandCost(t *testing.T) {
 		// 124 shared runes and 4 others: distance 4, just over the limit of 3.
 		notes[i] = fmt.Sprintf("d%d/%s%04d.md", i%100, strings.Repeat("a", 124), i%10000)
 	}
+	limit := time.Second
+	if raceEnabled {
+		limit *= 10 // the race detector costs 5-20x
+	}
 	start := time.Now()
 	_ = suggest(q, notes, 5)
-	if d := time.Since(start); d > time.Second {
-		t.Errorf("suggest took %v, want < 1s", d)
+	if d := time.Since(start); d > limit {
+		t.Errorf("suggest took %v, want < %v", d, limit)
 	}
 }
 
